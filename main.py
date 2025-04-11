@@ -5,6 +5,8 @@ import os
 
 # 🔑 Pegando o token do secrets do Railway
 TOKEN = os.getenv("DISCORD_TOKEN")
+if TOKEN is None:
+    raise ValueError("❌ Variável de ambiente DISCORD_TOKEN não encontrada.")
 
 # 🏠 Coloque aqui o ID do seu servidor (guild)
 GUILD_ID = 709705286083936256  # <-- troque pelo ID do seu servidor!
