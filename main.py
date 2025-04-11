@@ -7,7 +7,7 @@ import os
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 # 🏠 Coloque aqui o ID do seu servidor (guild)
-GUILD_ID = 123456789012345678  # <-- troque pelo ID do seu servidor!
+GUILD_ID = 709705286083936256  # <-- troque pelo ID do seu servidor!
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
