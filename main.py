@@ -1,108 +1,81 @@
 import discord
-from discord.ext import commands
+from discord import app_commands
 import json
-from datetime import datetime, timedelta
 import os
 
+TOKEN = os.getenv("DISCORD_TOKEN")  # Pegando o token das variáveis de ambiente
+DATA_FILE = "dados.json"
+
 intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+client = discord.Client(intents=intents)
+tree = app_commands.CommandTree(client)
 
-ARQUIVO_PARTIDAS = "partidas.json"
-PONTOS = {1: 3, 2: 1}
+# Função para salvar dados
+def salvar_dados(jogo, posicoes, duracao):
+    if not os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "w") as f:
+            json.dump({}, f)
 
-# Inicializa o arquivo se não existir
-if not os.path.exists(ARQUIVO_PARTIDAS):
-    with open(ARQUIVO_PARTIDAS, "w") as f:
-        json.dump([], f)
+    with open(DATA_FILE, "r") as f:
+        dados = json.load(f)
 
-def salvar_partida(partida):
-    with open(ARQUIVO_PARTIDAS, "r") as f:
-        partidas = json.load(f)
-    partidas.append(partida)
-    with open(ARQUIVO_PARTIDAS, "w") as f:
-        json.dump(partidas, f, indent=2)
+    if jogo not in dados:
+        dados[jogo] = {}
 
-def carregar_partidas():
-    with open(ARQUIVO_PARTIDAS, "r") as f:
-        return json.load(f)
+    pontos = [3, 1, 0, 0]
 
-def calcular_ranking(periodo=None):
-    partidas = carregar_partidas()
-    agora = datetime.utcnow()
-    pontuacao = {}
+    for i, jogador in enumerate(posicoes):
+        if jogador not in dados[jogo]:
+            dados[jogo][jogador] = 0
+        dados[jogo][jogador] += pontos[i]
 
-    for partida in partidas:
-        data = datetime.fromisoformat(partida["data"])
-        if periodo == "semanal" and (agora - data).days > 7:
-            continue
-        elif periodo == "mensal" and (agora - data).days > 30:
-            continue
-        elif periodo == "anual" and (agora - data).days > 365:
-            continue
+    with open(DATA_FILE, "w") as f:
+        json.dump(dados, f, indent=4)
 
-        for p in partida["posicoes"]:
-            pontos = PONTOS.get(p["colocacao"], 0)
-            if p["nome"] not in pontuacao:
-                pontuacao[p["nome"]] = 0
-            pontuacao[p["nome"]] += pontos
-
-    return sorted(pontuacao.items(), key=lambda x: x[1], reverse=True)
-
-@bot.event
+# Evento para iniciar o bot
+@client.event
 async def on_ready():
-    print(f"🤖 Bot online como {bot.user}")
+    await tree.sync()
+    print(f"🤖 Bot online como {client.user}")
 
-@bot.event
-async def on_message(message):
-    if message.author == bot.user:
+# Slash Command: /registrar
+@tree.command(name="registrar", description="Registrar uma nova partida")
+@app_commands.describe(
+    jogo="Nome do jogo",
+    pos1="Jogador em 1º lugar",
+    pos2="Jogador em 2º lugar",
+    pos3="Jogador em 3º lugar",
+    pos4="Jogador em 4º lugar",
+    duracao="Duração da partida (ex: 2h)"
+)
+async def registrar(interaction: discord.Interaction, jogo: str, pos1: discord.User, pos2: discord.User, pos3: discord.User, pos4: discord.User, duracao: str):
+    posicoes = [str(pos1.id), str(pos2.id), str(pos3.id), str(pos4.id)]
+    salvar_dados(jogo, posicoes, duracao)
+
+    await interaction.response.send_message(
+        f"✅ Partida registrada!\n🎮 Jogo: **{jogo}**\n1️⃣ {pos1.mention}\n2️⃣ {pos2.mention}\n3️⃣ {pos3.mention}\n4️⃣ {pos4.mention}\n🕒 Duração: **{duracao}**"
+    )
+
+# Slash Command: /ranking
+@tree.command(name="ranking", description="Ver ranking de um jogo")
+@app_commands.describe(jogo="Nome do jogo")
+async def ranking(interaction: discord.Interaction, jogo: str):
+    if not os.path.exists(DATA_FILE):
+        await interaction.response.send_message("Ainda não há dados salvos.")
         return
 
-    if message.content.startswith("!ranking"):
-        partes = message.content.split()
-        periodo = partes[1] if len(partes) > 1 else None
-        ranking = calcular_ranking(periodo)
+    with open(DATA_FILE, "r") as f:
+        dados = json.load(f)
 
-        if not ranking:
-            await message.channel.send("Nenhuma pontuação encontrada para esse período.")
-            return
-
-        resposta = f"🏆 Ranking {periodo or 'geral'}:\n"
-        for i, (nome, pontos) in enumerate(ranking, start=1):
-            resposta += f"{i}. {nome} - {pontos} pontos\n"
-
-        await message.channel.send(resposta)
+    if jogo not in dados or not dados[jogo]:
+        await interaction.response.send_message(f"Sem dados para o jogo **{jogo}**.")
         return
 
-    if message.content.count("\n") >= 5:
-        linhas = message.content.strip().split("\n")
-        jogo = linhas[0]
-        jogadores = linhas[1:-1]
-        duracao = linhas[-1]
+    ranking_ordenado = sorted(dados[jogo].items(), key=lambda x: x[1], reverse=True)
+    texto = f"📊 **Ranking de {jogo}**:\n\n"
+    for i, (jogador_id, pontos) in enumerate(ranking_ordenado, 1):
+        texto += f"{i}º <@{jogador_id}> - {pontos} pontos\n"
 
-        posicoes = []
-        for linha in jogadores:
-            try:
-                colocacao, mencao = linha.strip().split(" ")
-                user = mencao.replace("<@", "").replace(">", "").replace("!", "")
-                membro = await message.guild.fetch_member(int(user))
-                posicoes.append({
-                    "id": membro.id,
-                    "nome": membro.display_name,
-                    "colocacao": int(colocacao)
-                })
-            except:
-                continue
+    await interaction.response.send_message(texto)
 
-        partida = {
-            "jogo": jogo,
-            "posicoes": posicoes,
-            "duracao": duracao,
-            "data": datetime.utcnow().isoformat()
-        }
-
-        salvar_partida(partida)
-        await message.channel.send(f"Partida de {jogo} registrada com sucesso!")
-
-TOKEN = os.getenv("DISCORD_TOKEN")
-bot.run(TOKEN)
+client.run(TOKEN)
