@@ -1,112 +1,87 @@
 import discord
-from discord import app_commands
 from discord.ext import commands
+from discord import app_commands
 import json
 import os
 
-# Intents obrigatórios
+# ----- CONFIGURAÇÕES -----
 intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
+bot = commands.Bot(command_prefix=None, intents=intents)
+TOKEN = os.getenv("DISCORD_TOKEN")  # Defina no ambiente (Railway)
 
-bot = commands.Bot(command_prefix="!", intents=intents)
-TOKEN = os.getenv("DISCORD_TOKEN")
+# ----- JSON DE PONTUAÇÃO -----
+ARQUIVO_PONTUACAO = "pontuacao.json"
 
-DADOS_ARQUIVO = "dados.json"
+def carregar_pontuacoes():
+    if not os.path.exists(ARQUIVO_PONTUACAO):
+        return {}
+    with open(ARQUIVO_PONTUACAO, "r") as f:
+        return json.load(f)
 
-def carregar_dados():
-    if os.path.exists(DADOS_ARQUIVO):
-        with open(DADOS_ARQUIVO, "r") as f:
-            return json.load(f)
-    return {}
+def salvar_pontuacoes(pontuacoes):
+    with open(ARQUIVO_PONTUACAO, "w") as f:
+        json.dump(pontuacoes, f, indent=4)
 
-def salvar_dados(dados):
-    with open(DADOS_ARQUIVO, "w") as f:
-        json.dump(dados, f, indent=4)
-
+# ----- EVENTO DE BOT ONLINE E SYNC -----
 @bot.event
 async def on_ready():
     synced = await bot.tree.sync()
     print(f"🤖 Bot online como {bot.user}")
     print(f"✅ {len(synced)} comando(s) Slash sincronizado(s): {[cmd.name for cmd in synced]}")
 
-@bot.tree.command(name="registrar", description="Registrar partida (3 a 8 jogadores)")
+# ----- COMANDO /registrar -----
+@bot.tree.command(name="registrar", description="Registrar uma nova partida")
 @app_commands.describe(
     jogo="Nome do jogo",
-    duracao="Duração da partida (ex: 1h30)",
-    jogadores="Mencione os jogadores em ordem de colocação (ex: @A @B @C)"
+    jogadores="Menções dos jogadores em ordem (ex: @A @B @C ...)",
+    duracao="Duração da partida (ex: 2h, 30min)"
 )
-async def registrar(
-    interaction: discord.Interaction,
-    jogo: str,
-    duracao: str,
-    jogadores: str
-):
+async def registrar(interaction: discord.Interaction, jogo: str, jogadores: str, duracao: str):
     mencoes = jogadores.split()
-    if not (3 <= len(mencoes) <= 8):
-        await interaction.response.send_message("❌ Informe entre 3 e 8 jogadores (mencionando cada um com @).")
+    pontuacoes = carregar_pontuacoes()
+
+    total_jogadores = len(mencoes)
+    if total_jogadores < 3 or total_jogadores > 8:
+        await interaction.response.send_message("❌ A partida deve ter entre 3 e 8 jogadores.", ephemeral=True)
         return
 
-    membros = []
-    for mencao in mencoes:
-        if mencao.startswith("<@") and mencao.endswith(">"):
-            mencao = mencao.replace("<@", "").replace("!", "").replace(">", "")
-            membro = interaction.guild.get_member(int(mencao))
-            if membro:
-                membros.append(membro)
-            else:
-                await interaction.response.send_message(f"❌ Jogador com ID {mencao} não encontrado no servidor.")
-                return
-        else:
-            await interaction.response.send_message("❌ Use apenas menções válidas aos jogadores.")
-            return
+    resultado = []
+    for i, mencao in enumerate(mencoes):
+        pontos = 0
+        if i == 0:
+            pontos = 3
+        elif i == 1:
+            pontos = 1
+        elif i == total_jogadores - 1:
+            pontos = -1
 
-    pontos = [0] * len(membros)
-    pontos[0] = 3  # 1º lugar
-    if len(membros) >= 2:
-        pontos[1] = 1  # 2º lugar
-    pontos[-1] = -1  # Último lugar
+        user_id = mencao.strip("<@!>")
+        pontuacoes[user_id] = pontuacoes.get(user_id, 0) + pontos
 
-    dados = carregar_dados()
-    if jogo not in dados:
-        dados[jogo] = {}
+        emoji = "🥇" if i == 0 else "🥈" if i == 1 else "💩" if i == total_jogadores - 1 else "•"
+        resultado.append(f"{emoji} {mencao} — **{pontos:+} ponto(s)**")
 
-    for jogador, ponto in zip(membros, pontos):
-        user_id = str(jogador.id)
-        if user_id in dados[jogo]:
-            dados[jogo][user_id] += ponto
-        else:
-            dados[jogo][user_id] = ponto
+    salvar_pontuacoes(pontuacoes)
 
-    salvar_dados(dados)
-
-    emojis = ["🥇", "🥈", "🥉"] + [f"{i+1}️⃣" for i in range(3, len(membros))]
-    resposta = f"✅ Partida de **{jogo}** registrada!\n🏆 Pontuação:\n"
-
-    for i, (jogador, ponto) in enumerate(zip(membros, pontos)):
-        emoji = emojis[i] if i < len(emojis) else f"{i+1}º"
-        resposta += f"{emoji} {jogador.mention} ({'+' if ponto >= 0 else ''}{ponto})\n"
-
-    resposta += f"⏱️ Duração: **{duracao}**"
+    resposta = f"✅ Partida de **{jogo}** registrada!\n🕒 Duração: `{duracao}`\n\n" + "\n".join(resultado)
     await interaction.response.send_message(resposta)
 
-@bot.tree.command(name="ranking", description="Mostra o ranking geral de um jogo")
-@app_commands.describe(jogo="Nome do jogo")
-async def ranking(interaction: discord.Interaction, jogo: str):
-    dados = carregar_dados()
-    ranking = dados.get(jogo, {})
-    if not ranking:
-        await interaction.response.send_message(f"Nenhum dado encontrado para o jogo {jogo}.")
+# ----- COMANDO /ranking -----
+@bot.tree.command(name="ranking", description="Ver ranking atual")
+async def ranking(interaction: discord.Interaction):
+    pontuacoes = carregar_pontuacoes()
+
+    if not pontuacoes:
+        await interaction.response.send_message("📉 Ainda não há dados no ranking.")
         return
 
-    ranking_ordenado = sorted(ranking.items(), key=lambda item: item[1], reverse=True)
-    emojis = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
-
-    texto = f"🏆 **Ranking Geral - {jogo}**\n\n"
-    for i, (user_id, pontos) in enumerate(ranking_ordenado[:10]):
-        emoji = emojis[i] if i < len(emojis) else f"{i+1}º"
-        texto += f"{emoji} <@{user_id}> — **{pontos}** pontos\n"
+    ranking_ordenado = sorted(pontuacoes.items(), key=lambda x: x[1], reverse=True)
+    texto = "🏆 **Ranking Geral**\n\n"
+    for pos, (user_id, pontos) in enumerate(ranking_ordenado, 1):
+        medalha = "🥇" if pos == 1 else "🥈" if pos == 2 else "🥉" if pos == 3 else "🔹"
+        texto += f"{medalha} <@{user_id}> — **{pontos} ponto(s)**\n"
 
     await interaction.response.send_message(texto)
 
+# ----- EXECUÇÃO -----
 bot.run(TOKEN)
