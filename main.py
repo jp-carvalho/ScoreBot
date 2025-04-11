@@ -25,9 +25,13 @@ def salvar_pontuacoes(pontuacoes):
 # ----- EVENTO DE BOT ONLINE E SYNC -----
 @bot.event
 async def on_ready():
-    synced = await bot.tree.sync()
     print(f"🤖 Bot online como {bot.user}")
-    print(f"✅ {len(synced)} comando(s) Slash sincronizado(s): {[cmd.name for cmd in synced]}")
+    try:
+        GUILD_ID = 709705286083936256  # <<< coloque aqui o ID do seu servidor
+        synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+        print(f"✅ Comandos Slash sincronizados manualmente: {[cmd.name for cmd in synced]}")
+    except Exception as e:
+        print(f"Erro ao sincronizar comandos: {e}")
 
 # ----- COMANDO /registrar -----
 @bot.tree.command(name="registrar", description="Registrar uma nova partida")
