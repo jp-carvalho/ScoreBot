@@ -337,6 +337,33 @@ async def debug(interaction: discord.Interaction):
     )
     await interaction.response.send_message(info, ephemeral=True)
 
+@bot.tree.command(name="reset_data", description="🔴 RESETA todos os dados (apenas admin)")
+@app_commands.default_permissions(administrator=True)
+async def reset_data(interaction: discord.Interaction, confirmacao: str):
+    """
+    ⚠️ Comando perigoso! Requer confirmação explícita
+    """
+    if confirmacao.lower() != "confirmar-reset-total":
+        return await interaction.response.send_message(
+            "❌ Confirmação inválida! Use `confirmar-reset-total` para resetar.",
+            ephemeral=True
+        )
+
+    try:
+        with open(DADOS_FILE, "w") as f:
+            json.dump([], f)
+
+        await interaction.response.send_message(
+            "✅ Banco de dados resetado com sucesso! Todos os registros foram apagados.",
+            ephemeral=True
+        )
+        print(f"⚠️ Dados resetados por {interaction.user.name}")
+    except Exception as e:
+        await interaction.response.send_message(
+            f"❌ Erro ao resetar: {str(e)}",
+            ephemeral=True
+        )
+
 # ======================
 # SISTEMA AUTOMÁTICO
 # ======================
