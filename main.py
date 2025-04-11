@@ -17,7 +17,7 @@ MINIMO_JOGADORES = 2
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-# Funções auxiliares (mantidas iguais)
+# Funções auxiliares
 def carregar_dados():
     try:
         with open(DADOS_FILE, "r", encoding="utf-8") as f:
@@ -52,7 +52,7 @@ def filtrar_partidas_por_periodo_e_jogo(dados, periodo=None, jogo=None):
 def obter_jogos_unicos(dados):
     return sorted({p["jogo"].lower() for p in dados})
 
-# Comando /game (mantido)
+# Comando /game
 @bot.tree.command(name="game", description="Registra uma partida competitiva")
 @app_commands.describe(
     jogo="Nome do jogo (ex: Uno, Xadrez)",
@@ -71,9 +71,44 @@ async def registrar_partida(interaction: discord.Interaction, jogo: str, duracao
                           jogador3: discord.Member = None, jogador4: discord.Member = None,
                           jogador5: discord.Member = None, jogador6: discord.Member = None,
                           jogador7: discord.Member = None, jogador8: discord.Member = None):
-    # ... (implementação mantida igual) ...
 
-# Função para criar rankings
+    jogadores = [j for j in [jogador1, jogador2, jogador3, jogador4, 
+                            jogador5, jogador6, jogador7, jogador8] if j is not None]
+
+    if len(jogadores) < MINIMO_JOGADORES:
+        return await interaction.response.send_message(
+            f"❌ Mínimo de {MINIMO_JOGADORES} jogadores para registrar!",
+            ephemeral=True
+        )
+
+    partida = {
+        "jogo": jogo,
+        "duracao": duracao,
+        "data": datetime.now().isoformat(),
+        "jogadores": [str(j.id) for j in jogadores]
+    }
+
+    dados = carregar_dados()
+    dados.append(partida)
+    salvar_dados(dados)
+
+    embed = discord.Embed(
+        title=f"🎮 {jogo} | ⏱️ {duracao}",
+        color=0x2ecc71
+    )
+
+    for idx, jogador in enumerate(jogadores):
+        pontos = calcular_pontos(idx, len(jogadores))
+        embed.add_field(
+            name=f"{POSICOES[idx]} {jogador.display_name}",
+            value=f"`{pontos:+} ponto{'s' if pontos != 1 else ''}`",
+            inline=False
+        )
+
+    embed.set_footer(text=f"Registrado por {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed)
+
+# Função para criar rankings (CORRIGIDA)
 async def criar_embed_ranking(partidas, titulo, mostrar_extremos=False):
     estatisticas = {}
 
@@ -130,7 +165,7 @@ async def criar_embed_ranking(partidas, titulo, mostrar_extremos=False):
             f"📈 Média: {jogador['media']} pts/partida"
         ]
 
-        if mostrar_extremos or "anual" in titulo.lower() or "mensal" in titulo.lower():
+        if mostrar_extremos:
             stats_lines.extend([
                 f"🥇 Vitórias: {jogador['vitorias']}",
                 f"💀 Fracassos: {jogador['fracassos']}"
@@ -145,10 +180,10 @@ async def criar_embed_ranking(partidas, titulo, mostrar_extremos=False):
     embed.set_footer(text=f"Total de partidas: {len(partidas)}")
     return embed
 
-# Comandos de ranking (RESTAURADOS)
-@bot.tree.command(name="ranking", description="Mostra o ranking geral")
+# Comandos de ranking (ATUALIZADOS para /rank*)
+@bot.tree.command(name="rank", description="Mostra o ranking geral")
 @app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
-async def ranking_geral(interaction: discord.Interaction, jogo: str = None):
+async def rank_geral(interaction: discord.Interaction, jogo: str = None):
     dados = carregar_dados()
     if jogo:
         dados = filtrar_partidas_por_periodo_e_jogo(dados, None, jogo)
@@ -158,27 +193,27 @@ async def ranking_geral(interaction: discord.Interaction, jogo: str = None):
     embed = await criar_embed_ranking(dados, titulo)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="ranking_semanal", description="Mostra o ranking da semana")
+@bot.tree.command(name="rank_semanal", description="Mostra o ranking da semana")
 @app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
-async def ranking_semanal(interaction: discord.Interaction, jogo: str = None):
+async def rank_semanal(interaction: discord.Interaction, jogo: str = None):
     dados = carregar_dados()
     semana = filtrar_partidas_por_periodo_e_jogo(dados, "semana", jogo)
     titulo = f"Semanal - {jogo}" if jogo else "Semanal"
     embed = await criar_embed_ranking(semana, titulo)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="ranking_mensal", description="Mostra o ranking do mês")
+@bot.tree.command(name="rank_mensal", description="Mostra o ranking do mês")
 @app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
-async def ranking_mensal(interaction: discord.Interaction, jogo: str = None):
+async def rank_mensal(interaction: discord.Interaction, jogo: str = None):
     dados = carregar_dados()
     mes = filtrar_partidas_por_periodo_e_jogo(dados, "mes", jogo)
     titulo = f"Mensal - {jogo}" if jogo else "Mensal"
     embed = await criar_embed_ranking(mes, titulo, True)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="ranking_anual", description="Mostra o ranking do ano")
+@bot.tree.command(name="rank_anual", description="Mostra o ranking do ano")
 @app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
-async def ranking_anual(interaction: discord.Interaction, jogo: str = None):
+async def rank_anual(interaction: discord.Interaction, jogo: str = None):
     dados = carregar_dados()
     ano = filtrar_partidas_por_periodo_e_jogo(dados, "ano", jogo)
     titulo = f"Anual - {jogo}" if jogo else "Anual"
@@ -198,15 +233,15 @@ async def enviar_rankings_automaticos():
 
         # Domingo às 23:59 - Ranking Semanal
         if now.weekday() == 6 and now.hour == 23 and now.minute == 59:
-            await enviar_ranking_automatico("semana", "Ranking Semanal", canal)
+            await enviar_ranking_automatico("semana", "Rank Semanal", canal)
 
         # Último dia do mês às 23:59 - Ranking Mensal
         if (now + timedelta(days=1)).month != now.month and now.hour == 23 and now.minute == 59:
-            await enviar_ranking_automatico("mes", "Ranking Mensal", canal)
+            await enviar_ranking_automatico("mes", "Rank Mensal", canal)
 
         # 31/12 às 23:59 - Ranking Anual
         if now.month == 12 and now.day == 31 and now.hour == 23 and now.minute == 59:
-            await enviar_ranking_automatico("ano", "Ranking Anual", canal)
+            await enviar_ranking_automatico("ano", "Rank Anual", canal)
 
         await asyncio.sleep(60)
 
@@ -217,17 +252,18 @@ async def enviar_ranking_automatico(periodo, titulo, canal):
     if not partidas:
         return
 
-    embed = await criar_embed_ranking(partidas, titulo, periodo in ["mes", "ano"])
+    mostrar_extremos = periodo in ["mes", "ano"]
+    embed = await criar_embed_ranking(partidas, titulo, mostrar_extremos)
     await canal.send(embed=embed)
 
 @bot.event
 async def on_ready():
     print(f"\n✅ Bot conectado como {bot.user.name}")
     print(f"📌 Rankings automáticos no canal: {CANAL_RANKING_ID}")
-    await bot.tree.sync()  # Sincroniza todos os comandos
+    await bot.tree.sync()
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.watching,
-        name="/game e /ranking"
+        name="/game e /rank"
     ))
     bot.loop.create_task(enviar_rankings_automaticos())
 
