@@ -10,7 +10,7 @@ intents.message_content = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-TOKEN = os.getenv("DISCORD_TOKEN")  # Token vem da variável de ambiente
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 DADOS_ARQUIVO = "dados.json"
 
@@ -29,32 +29,48 @@ async def on_ready():
     await bot.tree.sync()
     print(f"🤖 Bot online como {bot.user}")
 
-@bot.tree.command(name="registrar", description="Registrar partida")
+@bot.tree.command(name="registrar", description="Registrar partida (3 a 8 jogadores)")
 @app_commands.describe(
     jogo="Nome do jogo",
-    primeiro="Jogador em 1º lugar",
-    segundo="Jogador em 2º lugar",
-    terceiro="Jogador em 3º lugar",
-    quarto="Jogador em 4º lugar",
-    duracao="Duração da partida (ex: 2h30)"
+    duracao="Duração da partida (ex: 1h30)",
+    jogadores="Mencione os jogadores em ordem de colocação (ex: @A @B @C)"
 )
 async def registrar(
     interaction: discord.Interaction,
     jogo: str,
-    primeiro: discord.Member,
-    segundo: discord.Member,
-    terceiro: discord.Member,
-    quarto: discord.Member,
-    duracao: str
+    duracao: str,
+    jogadores: str
 ):
-    jogadores = [primeiro, segundo, terceiro, quarto]
-    pontos = [3, 1, 0, -1]
+    mencoes = jogadores.split()
+    if not (3 <= len(mencoes) <= 8):
+        await interaction.response.send_message("❌ Informe entre 3 e 8 jogadores (mencionando cada um com @).")
+        return
+
+    membros = []
+    for mencao in mencoes:
+        if mencao.startswith("<@") and mencao.endswith(">"):
+            mencao = mencao.replace("<@", "").replace("!", "").replace(">", "")
+            membro = interaction.guild.get_member(int(mencao))
+            if membro:
+                membros.append(membro)
+            else:
+                await interaction.response.send_message(f"❌ Jogador com ID {mencao} não encontrado no servidor.")
+                return
+        else:
+            await interaction.response.send_message("❌ Use apenas menções válidas aos jogadores.")
+            return
+
+    pontos = [0] * len(membros)
+    pontos[0] = 3  # 1º lugar
+    if len(membros) >= 2:
+        pontos[1] = 1  # 2º lugar
+    pontos[-1] = -1  # Último lugar
 
     dados = carregar_dados()
     if jogo not in dados:
         dados[jogo] = {}
 
-    for jogador, ponto in zip(jogadores, pontos):
+    for jogador, ponto in zip(membros, pontos):
         user_id = str(jogador.id)
         if user_id in dados[jogo]:
             dados[jogo][user_id] += ponto
@@ -63,15 +79,14 @@ async def registrar(
 
     salvar_dados(dados)
 
-    resposta = (
-        f"✅ Partida de **{jogo}** registrada!\n"
-        f"🏆 Pontuação:\n"
-        f"🥇 {primeiro.mention} (+3)\n"
-        f"🥈 {segundo.mention} (+1)\n"
-        f"🥉 {terceiro.mention} (+0)\n"
-        f"💀 {quarto.mention} (-1)\n"
-        f"⏱️ Duração: **{duracao}**"
-    )
+    emojis = ["🥇", "🥈", "🥉"] + [f"{i+1}️⃣" for i in range(3, len(membros))]
+    resposta = f"✅ Partida de **{jogo}** registrada!\n🏆 Pontuação:\n"
+
+    for i, (jogador, ponto) in enumerate(zip(membros, pontos)):
+        emoji = emojis[i] if i < len(emojis) else f"{i+1}º"
+        resposta += f"{emoji} {jogador.mention} ({'+' if ponto >= 0 else ''}{ponto})\n"
+
+    resposta += f"⏱️ Duração: **{duracao}**"
     await interaction.response.send_message(resposta)
 
 @bot.tree.command(name="ranking", description="Mostra o ranking geral de um jogo")
