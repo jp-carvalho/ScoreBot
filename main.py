@@ -2,29 +2,63 @@ import os
 import discord
 import json
 import asyncio
+import shutil
 from datetime import datetime, timedelta
 from discord.ext import commands
 from discord import app_commands
 
-# =============================================
+# ======================
 # CONFIGURAÇÕES GLOBAIS
-# =============================================
+# ======================
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = 709705286083936256
-DADOS_FILE = "dados.json"
+
+# Configuração de persistência
+PERSISTENT_MODE = os.getenv("PERSISTENT_DATA", "false").lower() == "true"
+DATA_DIR = "data" if PERSISTENT_MODE else "."
+DADOS_FILE = os.path.join(DATA_DIR, "dados.json")
 POSICOES = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 CANAL_RANKING_ID = 1360294622768926901
 MINIMO_JOGADORES = 2
 
-# =============================================
+# ======================
 # INICIALIZAÇÃO DO BOT
-# =============================================
+# ======================
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-# =============================================
+# ======================
+# SISTEMA DE PERSISTÊNCIA
+# ======================
+def init_persistence():
+    """Garante a estrutura de arquivos e migra dados se necessário"""
+    try:
+        # Cria diretório se não existir
+        if PERSISTENT_MODE and not os.path.exists(DATA_DIR):
+            os.makedirs(DATA_DIR)
+            print(f"📁 Diretório '{DATA_DIR}' criado")
+
+        # Migração de dados antigos (se existirem)
+        old_file = "dados.json"
+        if os.path.exists(old_file) and not os.path.exists(DADOS_FILE):
+            shutil.move(old_file, DADOS_FILE)
+            print(f"♻️ Dados migrados de '{old_file}' para '{DADOS_FILE}'")
+
+        # Cria arquivo se não existir
+        if not os.path.exists(DADOS_FILE):
+            with open(DADOS_FILE, "w") as f:
+                json.dump([], f)
+            print(f"📄 Arquivo '{DADOS_FILE}' criado")
+
+    except Exception as e:
+        print(f"❌ Erro na inicialização: {str(e)}")
+
+# Executa durante a importação
+init_persistence()
+
+# ======================
 # FUNÇÕES AUXILIARES
-# =============================================
+# ======================
 def carregar_dados():
     try:
         with open(DADOS_FILE, "r", encoding="utf-8") as f:
@@ -114,9 +148,9 @@ async def criar_embed_ranking(partidas, titulo):
 
     return mensagem.strip()
 
-# =============================================
+# ======================
 # COMANDOS DE REGISTRO
-# =============================================
+# ======================
 @bot.tree.command(name="game", description="Registra uma partida competitiva")
 @app_commands.describe(
     jogo="Nome do jogo (ex: Uno, Xadrez)",
@@ -217,9 +251,9 @@ async def correct_partida(interaction: discord.Interaction, jogo: str, duracao: 
 
     await interaction.response.send_message(resultado)
 
-# =============================================
+# ======================
 # COMANDOS DE CONSULTA
-# =============================================
+# ======================
 @bot.tree.command(name="jogos", description="Lista todos os jogos registrados")
 async def listar_jogos(interaction: discord.Interaction):
     dados = carregar_dados()
@@ -236,7 +270,7 @@ async def listar_jogos(interaction: discord.Interaction):
 async def rank_geral(interaction: discord.Interaction, jogo: str = None):
     dados = carregar_dados()
     partidas = filtrar_partidas_por_periodo_e_jogo(dados, None, jogo)
-    titulo = "Ranking Geral" + (f" - {jogo}" if jogo else "")
+    titulo = "Ranking Geral" + (f" - {jogo.capitalize()}" if jogo else "")
     mensagem = await criar_embed_ranking(partidas, titulo)
     await interaction.response.send_message(mensagem)
 
@@ -245,7 +279,7 @@ async def rank_geral(interaction: discord.Interaction, jogo: str = None):
 async def rank_semanal(interaction: discord.Interaction, jogo: str = None):
     dados = carregar_dados()
     partidas = filtrar_partidas_por_periodo_e_jogo(dados, "semana", jogo)
-    titulo = "Ranking Semanal" + (f" - {jogo}" if jogo else "")
+    titulo = "Ranking Semanal" + (f" - {jogo.capitalize()}" if jogo else "")
     mensagem = await criar_embed_ranking(partidas, titulo)
     await interaction.response.send_message(mensagem)
 
@@ -254,7 +288,7 @@ async def rank_semanal(interaction: discord.Interaction, jogo: str = None):
 async def rank_mensal(interaction: discord.Interaction, jogo: str = None):
     dados = carregar_dados()
     partidas = filtrar_partidas_por_periodo_e_jogo(dados, "mes", jogo)
-    titulo = "Ranking Mensal" + (f" - {jogo}" if jogo else "")
+    titulo = "Ranking Mensal" + (f" - {jogo.capitalize()}" if jogo else "")
     mensagem = await criar_embed_ranking(partidas, titulo)
     await interaction.response.send_message(mensagem)
 
@@ -263,7 +297,7 @@ async def rank_mensal(interaction: discord.Interaction, jogo: str = None):
 async def rank_anual(interaction: discord.Interaction, jogo: str = None):
     dados = carregar_dados()
     partidas = filtrar_partidas_por_periodo_e_jogo(dados, "ano", jogo)
-    titulo = "Ranking Anual" + (f" - {jogo}" if jogo else "")
+    titulo = "Ranking Anual" + (f" - {jogo.capitalize()}" if jogo else "")
     mensagem = await criar_embed_ranking(partidas, titulo)
     await interaction.response.send_message(mensagem)
 
@@ -292,9 +326,20 @@ async def rank_all(interaction: discord.Interaction):
     for parte in partes:
         await interaction.followup.send(parte)
 
-# =============================================
+@bot.tree.command(name="debug_persistencia", description="Mostra informações do sistema de arquivos")
+async def debug(interaction: discord.Interaction):
+    info = (
+        f"🔧 **Debug - Sistema de Arquivos**\n"
+        f"Modo Persistente: `{PERSISTENT_MODE}`\n"
+        f"Localização dos dados: `{os.path.abspath(DADOS_FILE)}`\n"
+        f"Arquivo existe: `{os.path.exists(DADOS_FILE)}`\n"
+        f"Tamanho: `{os.path.getsize(DADOS_FILE) if os.path.exists(DADOS_FILE) else 0} bytes`"
+    )
+    await interaction.response.send_message(info, ephemeral=True)
+
+# ======================
 # SISTEMA AUTOMÁTICO
-# =============================================
+# ======================
 async def enviar_rankings_automaticos():
     await bot.wait_until_ready()
     canal = bot.get_channel(CANAL_RANKING_ID)
@@ -329,16 +374,18 @@ async def enviar_ranking_automatico(periodo, titulo, canal):
     for jogo in jogos:
         partidas = filtrar_partidas_por_periodo_e_jogo(dados, periodo, jogo)
         if partidas:
-            mensagem = await criar_embed_ranking(partidas, f"{titulo} - {jogo}")
+            mensagem = await criar_embed_ranking(partidas, f"{titulo} - {jogo.capitalize()}")
             await canal.send(mensagem)
 
-# =============================================
+# ======================
 # EVENTOS DO BOT
-# =============================================
+# ======================
 @bot.event
 async def on_ready():
     print(f"\n✅ Bot conectado como {bot.user.name}")
-    print(f"📌 Rankings automáticos no canal: {CANAL_RANKING_ID}")
+    print(f"📌 Modo persistente: {'ATIVADO' if PERSISTENT_MODE else 'DESATIVADO'}")
+    print(f"📁 Local dos dados: {os.path.abspath(DADOS_FILE)}")
+
     await bot.tree.sync()
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.watching,
@@ -346,11 +393,14 @@ async def on_ready():
     ))
     bot.loop.create_task(enviar_rankings_automaticos())
 
-# =============================================
+# ======================
 # INICIALIZAÇÃO
-# =============================================
+# ======================
 if __name__ == "__main__":
+    # Verificação final antes de iniciar
     if not os.path.exists(DADOS_FILE):
         with open(DADOS_FILE, "w") as f:
             json.dump([], f)
+        print("Arquivo de dados inicializado")
+
     bot.run(TOKEN)

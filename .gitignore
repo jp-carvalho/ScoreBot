@@ -6,6 +6,12 @@ __pycache__/
 # C extensions
 *.so
 
+# Ignora o arquivo de dados local
+dados.json
+
+# Ignora a pasta data (opcional, mas recomendado)
+/data
+
 # Distribution / packaging
 .Python
 build/
