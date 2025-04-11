@@ -26,8 +26,9 @@ def salvar_dados(dados):
 
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
+    synced = await bot.tree.sync()
     print(f"🤖 Bot online como {bot.user}")
+    print(f"✅ {len(synced)} comando(s) Slash sincronizado(s): {[cmd.name for cmd in synced]}")
 
 @bot.tree.command(name="registrar", description="Registrar partida (3 a 8 jogadores)")
 @app_commands.describe(
