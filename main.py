@@ -13,9 +13,9 @@ from discord import app_commands
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = 709705286083936256
 
-# Configuração de persistência
-PERSISTENT_MODE = os.getenv("PERSISTENT_DATA", "false").lower() == "true"
-DATA_DIR = "data" if PERSISTENT_MODE else "."
+# Configuração de persistência (FORÇADO PARA TRUE)
+PERSISTENT_MODE = True  # Sobrescreve qualquer variável de ambiente
+DATA_DIR = "data"
 DADOS_FILE = os.path.join(DATA_DIR, "dados.json")
 POSICOES = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 CANAL_RANKING_ID = 1360294622768926901
@@ -34,15 +34,17 @@ def init_persistence():
     """Garante a estrutura de arquivos e migra dados se necessário"""
     try:
         # Cria diretório se não existir
-        if PERSISTENT_MODE and not os.path.exists(DATA_DIR):
+        if not os.path.exists(DATA_DIR):
             os.makedirs(DATA_DIR)
             print(f"📁 Diretório '{DATA_DIR}' criado")
 
         # Migração de dados antigos (se existirem)
-        old_file = "dados.json"
-        if os.path.exists(old_file) and not os.path.exists(DADOS_FILE):
-            shutil.move(old_file, DADOS_FILE)
-            print(f"♻️ Dados migrados de '{old_file}' para '{DADOS_FILE}'")
+        old_locations = ["dados.json", "/app/dados.json"]
+        for old_file in old_locations:
+            if os.path.exists(old_file) and not os.path.exists(DADOS_FILE):
+                shutil.move(old_file, DADOS_FILE)
+                print(f"♻️ Dados migrados de '{old_file}' para '{DADOS_FILE}'")
+                break
 
         # Cria arquivo se não existir
         if not os.path.exists(DADOS_FILE):
@@ -333,7 +335,8 @@ async def debug(interaction: discord.Interaction):
         f"Modo Persistente: `{PERSISTENT_MODE}`\n"
         f"Localização dos dados: `{os.path.abspath(DADOS_FILE)}`\n"
         f"Arquivo existe: `{os.path.exists(DADOS_FILE)}`\n"
-        f"Tamanho: `{os.path.getsize(DADOS_FILE) if os.path.exists(DADOS_FILE) else 0} bytes`"
+        f"Tamanho: `{os.path.getsize(DADOS_FILE) if os.path.exists(DADOS_FILE) else 0} bytes`\n"
+        f"Última modificação: `{datetime.fromtimestamp(os.path.getmtime(DADOS_FILE)) if os.path.exists(DADOS_FILE) else 'N/A'}`"
     )
     await interaction.response.send_message(info, ephemeral=True)
 
@@ -412,6 +415,7 @@ async def on_ready():
     print(f"\n✅ Bot conectado como {bot.user.name}")
     print(f"📌 Modo persistente: {'ATIVADO' if PERSISTENT_MODE else 'DESATIVADO'}")
     print(f"📁 Local dos dados: {os.path.abspath(DADOS_FILE)}")
+    print(f"🔍 Verificação: Arquivo existe? {os.path.exists(DADOS_FILE)}")
 
     await bot.tree.sync()
     await bot.change_presence(activity=discord.Activity(
@@ -424,10 +428,12 @@ async def on_ready():
 # INICIALIZAÇÃO
 # ======================
 if __name__ == "__main__":
-    # Verificação final antes de iniciar
+    # Verificação final de persistência
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR)
+
     if not os.path.exists(DADOS_FILE):
         with open(DADOS_FILE, "w") as f:
             json.dump([], f)
-        print("Arquivo de dados inicializado")
 
     bot.run(TOKEN)
