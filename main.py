@@ -10,14 +10,14 @@ from discord import app_commands
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = 709705286083936256
 DADOS_FILE = "dados.json"
-POSICOES = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣"]
+POSICOES = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 CANAL_RANKING_ID = 1360294622768926901
 MINIMO_JOGADORES = 2
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-# Funções auxiliares (mantidas iguais)
+# Funções auxiliares
 def carregar_dados():
     try:
         with open(DADOS_FILE, "r", encoding="utf-8") as f:
@@ -52,7 +52,7 @@ def filtrar_partidas_por_periodo_e_jogo(dados, periodo=None, jogo=None):
 def obter_jogos_unicos(dados):
     return sorted({p["jogo"].lower() for p in dados})
 
-# Comando /game - FORMATO NOVO
+# Comando /game
 @bot.tree.command(name="game", description="Registra uma partida competitiva")
 @app_commands.describe(
     jogo="Nome do jogo (ex: Uno, Xadrez)",
@@ -92,7 +92,6 @@ async def registrar_partida(interaction: discord.Interaction, jogo: str, duracao
     dados.append(partida)
     salvar_dados(dados)
 
-    # Formatação nova do /game
     resultado = f"🎮 {jogo} | ⏱️ {duracao}\n\n"
     for idx, jogador in enumerate(jogadores):
         pontos = calcular_pontos(idx, len(jogadores))
@@ -100,8 +99,8 @@ async def registrar_partida(interaction: discord.Interaction, jogo: str, duracao
 
     await interaction.response.send_message(resultado)
 
-# Função para criar rankings - FORMATO NOVO
-async def criar_embed_ranking(partidas, titulo, mostrar_extremos=False):
+# Função para criar rankings (atualizada)
+async def criar_embed_ranking(partidas, titulo):
     estatisticas = {}
 
     for partida in partidas:
@@ -143,27 +142,20 @@ async def criar_embed_ranking(partidas, titulo, mostrar_extremos=False):
 
     ranking.sort(key=lambda x: x["pontos"], reverse=True)
 
-    # Formatação nova dos rankings
     mensagem = f"**🏆 {titulo.upper()}**\n\n"
-    for pos, jogador in enumerate(ranking, start=1):
+    for pos, jogador in enumerate(ranking[:10], start=1):  # Mostra até 10 jogadores
         emoji = POSICOES[pos-1] if pos <= len(POSICOES) else f"{pos}️⃣"
         mensagem += (
             f"**{emoji} {jogador['nome']} | Total: {jogador['pontos']} pts**\n"
             f"📊 Partidas: {jogador['partidas']}\n"
             f"📈 Média: {jogador['media']} pts/partida\n"
+            f"🥇 Vitórias: {jogador['vitorias']}\n"
+            f"💀 Fracassos: {jogador['fracassos']}\n\n"
         )
-
-        if mostrar_extremos:
-            mensagem += (
-                f"🥇 Vitórias: {jogador['vitorias']}\n"
-                f"💀 Fracassos: {jogador['fracassos']}\n"
-            )
-
-        mensagem += "\n"  # Espaço entre jogadores
 
     return mensagem.strip()
 
-# Comandos de ranking
+# Comandos de ranking (atualizados)
 @bot.tree.command(name="rank", description="Mostra o ranking geral")
 @app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
 async def rank_geral(interaction: discord.Interaction, jogo: str = None):
@@ -188,7 +180,7 @@ async def rank_mensal(interaction: discord.Interaction, jogo: str = None):
     dados = carregar_dados()
     partidas = filtrar_partidas_por_periodo_e_jogo(dados, "mes", jogo)
     titulo = "Ranking Mensal" + (f" - {jogo}" if jogo else "")
-    mensagem = await criar_embed_ranking(partidas, titulo, True)
+    mensagem = await criar_embed_ranking(partidas, titulo)
     await interaction.response.send_message(mensagem)
 
 @bot.tree.command(name="rank_anual", description="Mostra o ranking do ano")
@@ -197,7 +189,7 @@ async def rank_anual(interaction: discord.Interaction, jogo: str = None):
     dados = carregar_dados()
     partidas = filtrar_partidas_por_periodo_e_jogo(dados, "ano", jogo)
     titulo = "Ranking Anual" + (f" - {jogo}" if jogo else "")
-    mensagem = await criar_embed_ranking(partidas, titulo, True)
+    mensagem = await criar_embed_ranking(partidas, titulo)
     await interaction.response.send_message(mensagem)
 
 # Sistema automático
@@ -235,11 +227,7 @@ async def enviar_ranking_automatico(periodo, titulo, canal):
     for jogo in jogos:
         partidas = filtrar_partidas_por_periodo_e_jogo(dados, periodo, jogo)
         if partidas:
-            mensagem = await criar_embed_ranking(
-                partidas,
-                f"{titulo} - {jogo}",
-                periodo in ["mes", "ano"]
-            )
+            mensagem = await criar_embed_ranking(partidas, f"{titulo} - {jogo}")
             await canal.send(mensagem)
 
 @bot.event
