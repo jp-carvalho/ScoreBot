@@ -1,81 +1,96 @@
 import discord
 from discord import app_commands
+from discord.ext import commands
 import json
 import os
 
-TOKEN = os.getenv("DISCORD_TOKEN")  # Pegando o token das variáveis de ambiente
-DATA_FILE = "dados.json"
-
+# Intents obrigatórios
 intents = discord.Intents.default()
-client = discord.Client(intents=intents)
-tree = app_commands.CommandTree(client)
+intents.message_content = True
+intents.members = True
 
-# Função para salvar dados
-def salvar_dados(jogo, posicoes, duracao):
-    if not os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "w") as f:
-            json.dump({}, f)
+bot = commands.Bot(command_prefix="!", intents=intents)
+TOKEN = os.getenv("DISCORD_TOKEN")  # Token vem da variável de ambiente
 
-    with open(DATA_FILE, "r") as f:
-        dados = json.load(f)
+DADOS_ARQUIVO = "dados.json"
 
+def carregar_dados():
+    if os.path.exists(DADOS_ARQUIVO):
+        with open(DADOS_ARQUIVO, "r") as f:
+            return json.load(f)
+    return {}
+
+def salvar_dados(dados):
+    with open(DADOS_ARQUIVO, "w") as f:
+        json.dump(dados, f, indent=4)
+
+@bot.event
+async def on_ready():
+    await bot.tree.sync()
+    print(f"🤖 Bot online como {bot.user}")
+
+@bot.tree.command(name="registrar", description="Registrar partida")
+@app_commands.describe(
+    jogo="Nome do jogo",
+    primeiro="Jogador em 1º lugar",
+    segundo="Jogador em 2º lugar",
+    terceiro="Jogador em 3º lugar",
+    quarto="Jogador em 4º lugar",
+    duracao="Duração da partida (ex: 2h30)"
+)
+async def registrar(
+    interaction: discord.Interaction,
+    jogo: str,
+    primeiro: discord.Member,
+    segundo: discord.Member,
+    terceiro: discord.Member,
+    quarto: discord.Member,
+    duracao: str
+):
+    jogadores = [primeiro, segundo, terceiro, quarto]
+    pontos = [3, 1, 0, -1]
+
+    dados = carregar_dados()
     if jogo not in dados:
         dados[jogo] = {}
 
-    pontos = [3, 1, 0, 0]
+    for jogador, ponto in zip(jogadores, pontos):
+        user_id = str(jogador.id)
+        if user_id in dados[jogo]:
+            dados[jogo][user_id] += ponto
+        else:
+            dados[jogo][user_id] = ponto
 
-    for i, jogador in enumerate(posicoes):
-        if jogador not in dados[jogo]:
-            dados[jogo][jogador] = 0
-        dados[jogo][jogador] += pontos[i]
+    salvar_dados(dados)
 
-    with open(DATA_FILE, "w") as f:
-        json.dump(dados, f, indent=4)
-
-# Evento para iniciar o bot
-@client.event
-async def on_ready():
-    await tree.sync()
-    print(f"🤖 Bot online como {client.user}")
-
-# Slash Command: /registrar
-@tree.command(name="registrar", description="Registrar uma nova partida")
-@app_commands.describe(
-    jogo="Nome do jogo",
-    pos1="Jogador em 1º lugar",
-    pos2="Jogador em 2º lugar",
-    pos3="Jogador em 3º lugar",
-    pos4="Jogador em 4º lugar",
-    duracao="Duração da partida (ex: 2h)"
-)
-async def registrar(interaction: discord.Interaction, jogo: str, pos1: discord.User, pos2: discord.User, pos3: discord.User, pos4: discord.User, duracao: str):
-    posicoes = [str(pos1.id), str(pos2.id), str(pos3.id), str(pos4.id)]
-    salvar_dados(jogo, posicoes, duracao)
-
-    await interaction.response.send_message(
-        f"✅ Partida registrada!\n🎮 Jogo: **{jogo}**\n1️⃣ {pos1.mention}\n2️⃣ {pos2.mention}\n3️⃣ {pos3.mention}\n4️⃣ {pos4.mention}\n🕒 Duração: **{duracao}**"
+    resposta = (
+        f"✅ Partida de **{jogo}** registrada!\n"
+        f"🏆 Pontuação:\n"
+        f"🥇 {primeiro.mention} (+3)\n"
+        f"🥈 {segundo.mention} (+1)\n"
+        f"🥉 {terceiro.mention} (+0)\n"
+        f"💀 {quarto.mention} (-1)\n"
+        f"⏱️ Duração: **{duracao}**"
     )
+    await interaction.response.send_message(resposta)
 
-# Slash Command: /ranking
-@tree.command(name="ranking", description="Ver ranking de um jogo")
+@bot.tree.command(name="ranking", description="Mostra o ranking geral de um jogo")
 @app_commands.describe(jogo="Nome do jogo")
 async def ranking(interaction: discord.Interaction, jogo: str):
-    if not os.path.exists(DATA_FILE):
-        await interaction.response.send_message("Ainda não há dados salvos.")
+    dados = carregar_dados()
+    ranking = dados.get(jogo, {})
+    if not ranking:
+        await interaction.response.send_message(f"Nenhum dado encontrado para o jogo {jogo}.")
         return
 
-    with open(DATA_FILE, "r") as f:
-        dados = json.load(f)
+    ranking_ordenado = sorted(ranking.items(), key=lambda item: item[1], reverse=True)
+    emojis = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 
-    if jogo not in dados or not dados[jogo]:
-        await interaction.response.send_message(f"Sem dados para o jogo **{jogo}**.")
-        return
-
-    ranking_ordenado = sorted(dados[jogo].items(), key=lambda x: x[1], reverse=True)
-    texto = f"📊 **Ranking de {jogo}**:\n\n"
-    for i, (jogador_id, pontos) in enumerate(ranking_ordenado, 1):
-        texto += f"{i}º <@{jogador_id}> - {pontos} pontos\n"
+    texto = f"🏆 **Ranking Geral - {jogo}**\n\n"
+    for i, (user_id, pontos) in enumerate(ranking_ordenado[:10]):
+        emoji = emojis[i] if i < len(emojis) else f"{i+1}º"
+        texto += f"{emoji} <@{user_id}> — **{pontos}** pontos\n"
 
     await interaction.response.send_message(texto)
 
-client.run(TOKEN)
+bot.run(TOKEN)
