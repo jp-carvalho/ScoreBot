@@ -1,0 +1,46 @@
+[
+  {
+    "jogo": "DC",
+    "posicoes": [
+      {
+        "id": 221794283009736705,
+        "nome": "Desenho",
+        "colocacao": 1
+      },
+      {
+        "id": 329430347420794880,
+        "nome": "Gabiikira",
+        "colocacao": 3
+      }
+    ],
+    "duracao": "2h",
+    "data": "2025-04-11T18:32:49.807010"
+  },
+  {
+    "jogo": "DC",
+    "posicoes": [
+      {
+        "id": 221794283009736705,
+        "nome": "Desenho",
+        "colocacao": 1
+      },
+      {
+        "id": 532716061041098752,
+        "nome": "Brunin",
+        "colocacao": 2
+      },
+      {
+        "id": 329430347420794880,
+        "nome": "Gabiikira",
+        "colocacao": 3
+      },
+      {
+        "id": 401769284575166465,
+        "nome": "Guilherme",
+        "colocacao": 4
+      }
+    ],
+    "duracao": "2h",
+    "data": "2025-04-11T18:33:40.986572"
+  }
+]
