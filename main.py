@@ -642,37 +642,37 @@ async def enviar_rankings_automaticos():
 async def on_ready():
     init_persistence()  # Garante que os diretórios e arquivos existam
 
-    print(f"✅ Bot conectado como {bot.user.name}")
-    print("📋 Comandos registrados:")
-    for cmd in bot.tree.get_commands():
-        print(f"- /{cmd.name}")print(f"✅ Bot conectado como {bot.user.name}")
-    print(f"📁 Local dos dados: {os.path.abspath(DADOS_FILE)}")
+    # Cabeçalho de inicialização
+    print("\n" + "="*50)
+    print(f"🟢 BOT INICIALIZADO - {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+    print("="*50)
+    print(f"🔷 Nome: {bot.user.name}")
+    print(f"🔷 ID: {bot.user.id}")
+    print(f"🔷 Versão Discord.py: {discord.__version__}")
+    print(f"🔷 Caminho dos dados: {os.path.abspath(DADOS_FILE)}")
+    print("="*50)
 
+    # Sincronização de comandos
     try:
         synced = await bot.tree.sync()
-        print(f"✅ {len(synced)} comandos sincronizados")
+        print(f"\n🔧 COMANDOS SLASH ({len(synced)} registrados):")
+        for cmd in sorted(synced, key=lambda c: c.name):
+            print(f"├─ /{cmd.name}: {cmd.description}")
     except Exception as e:
-        print(f"⚠️ Erro ao sincronizar comandos: {e}")
+        print(f"\n⚠️ ERRO NA SINCRONIZAÇÃO:")
+        traceback.print_exc()
 
+    # Status e tarefas
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.watching,
         name="/game e /rank"
     ))
-
     bot.loop.create_task(enviar_rankings_automaticos())
-    print("✅ Tarefas automáticas iniciadas")
 
-        # ======================
-        # COMANDOS DE ADMINISTRAÇÃO
-        # ======================
-        @bot.command()
-        async def sync(ctx):
-            """Sincroniza os comandos slash (apenas dono)"""
-            if ctx.author.id == 221794283009736705:  # Substitua pelo seu ID de usuário do Discord
-                await bot.tree.sync()
-                await ctx.send("✅ Comandos sincronizados!")
-            else:
-                await ctx.send("❌ Você não tem permissão para executar este comando.")
+    print("\n" + "="*50)
+    print("✅ BOT PRONTO PARA USO")
+    print(f"🕒 Última inicialização: {datetime.now().strftime('%H:%M:%S')}")
+    print("="*50 + "\n")
 
 # ======================
 # COMANDOS DE ADMINISTRAÇÃO
@@ -680,11 +680,12 @@ async def on_ready():
 @bot.command()
 async def sync(ctx):
     """Sincroniza os comandos slash (apenas dono)"""
-    if ctx.author.id == SEU_ID_DISCORD:  # Substitua pelo seu ID de usuário do Discord
+    if ctx.author.id == 221794283009736705:  # Seu ID
         await bot.tree.sync()
         await ctx.send("✅ Comandos sincronizados!")
     else:
         await ctx.send("❌ Você não tem permissão para executar este comando.")
+
 
 # ======================
 # INICIALIZAÇÃO
