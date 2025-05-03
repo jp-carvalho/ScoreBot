@@ -643,6 +643,9 @@ async def on_ready():
     init_persistence()  # Garante que os diretórios e arquivos existam
 
     print(f"✅ Bot conectado como {bot.user.name}")
+    print("📋 Comandos registrados:")
+    for cmd in bot.tree.get_commands():
+        print(f"- /{cmd.name}")print(f"✅ Bot conectado como {bot.user.name}")
     print(f"📁 Local dos dados: {os.path.abspath(DADOS_FILE)}")
 
     try:
@@ -658,6 +661,30 @@ async def on_ready():
 
     bot.loop.create_task(enviar_rankings_automaticos())
     print("✅ Tarefas automáticas iniciadas")
+
+        # ======================
+        # COMANDOS DE ADMINISTRAÇÃO
+        # ======================
+        @bot.command()
+        async def sync(ctx):
+            """Sincroniza os comandos slash (apenas dono)"""
+            if ctx.author.id == 221794283009736705:  # Substitua pelo seu ID de usuário do Discord
+                await bot.tree.sync()
+                await ctx.send("✅ Comandos sincronizados!")
+            else:
+                await ctx.send("❌ Você não tem permissão para executar este comando.")
+
+# ======================
+# COMANDOS DE ADMINISTRAÇÃO
+# ======================
+@bot.command()
+async def sync(ctx):
+    """Sincroniza os comandos slash (apenas dono)"""
+    if ctx.author.id == SEU_ID_DISCORD:  # Substitua pelo seu ID de usuário do Discord
+        await bot.tree.sync()
+        await ctx.send("✅ Comandos sincronizados!")
+    else:
+        await ctx.send("❌ Você não tem permissão para executar este comando.")
 
 # ======================
 # INICIALIZAÇÃO
