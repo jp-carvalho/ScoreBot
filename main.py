@@ -565,6 +565,33 @@ async def reset_data(interaction: discord.Interaction, confirmacao: str):
             ephemeral=True
         )
 
+@bot.tree.command(name="debug_files", description="Mostra estrutura de arquivos")
+async def debug_files(interaction: discord.Interaction):
+    try:
+        import os
+        from pathlib import Path
+
+        # Lista todos os arquivos no diretório atual
+        files = []
+        for root, dirs, filenames in os.walk('.'):
+            for filename in filenames:
+                files.append(os.path.join(root, filename))
+
+        # Verifica se o arquivo de dados existe
+        dados_exists = os.path.exists(DADOS_FILE)
+
+        # Mostra informações
+        message = (
+            f"📁 Diretório atual: {os.getcwd()}\n"
+            f"📄 Arquivo de dados existe: {dados_exists}\n"
+            f"📄 Caminho completo: {os.path.abspath(DADOS_FILE)}\n\n"
+            f"📂 Arquivos encontrados:\n" + "\n".join(files[:20])  # Limita a 20 arquivos
+        )
+
+        await interaction.response.send_message(f"```{message}```", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Erro: {str(e)}", ephemeral=True)
+
 # ======================
 # SISTEMA AUTOMÁTICO
 # ======================
