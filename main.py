@@ -859,4 +859,100 @@ async def migrate_database(interaction: discord.Interaction):
 # ======================
 # SISTEMA AUTOMÁTICO
 # ======================
-async def enviar_
+async def enviar_rankings_automaticos():
+    await bot.wait_until_ready()
+    canal = bot.get_channel(CANAL_RANKING_ID)
+    if not canal:
+        print(f"❌ Canal de rankings ({CANAL_RANKING_ID}) não encontrado!")
+        return
+
+    while not bot.is_closed():
+        now = datetime.now()
+
+        try:
+            # Domingo às 23:59 - Ranking Semanal
+            if now.weekday() == 6 and now.hour == 23 and now.minute == 59:
+                await enviar_ranking_automatico("semana", "Ranking Semanal", canal)
+                criar_backup_automatico()
+
+            # Último dia do mês às 23:59 - Ranking Mensal
+            if (now + timedelta(days=1)).month != now.month and now.hour == 23 and now.minute == 59:
+                await enviar_ranking_automatico("mes", "Ranking Mensal", canal)
+                criar_backup_automatico()
+
+            # 31/12 às 23:59 - Ranking Anual
+            if now.month == 12 and now.day == 31 and now.hour == 23 and now.minute == 59:
+                await enviar_ranking_automatico("ano", "Ranking Anual", canal)
+                criar_backup_automatico()
+
+            await asyncio.sleep(60)
+        except Exception as e:
+            print(f"⚠️ Erro no sistema automático: {e}")
+            await asyncio.sleep(60)
+
+async def enviar_ranking_automatico(periodo, titulo, canal):
+    try:
+        dados = carregar_dados()
+        jogos = obter_jogos_unicos(dados)
+
+        if not jogos:
+            return
+
+        for jogo in jogos:
+            partidas = filtrar_partidas_por_periodo_e_jogo(dados, periodo, jogo)
+            if partidas:
+                mensagem = await criar_embed_ranking(partidas, f"{titulo} - {jogo.capitalize()}")
+                await canal.send(mensagem)
+    except Exception as e:
+        print(f"⚠️ Erro ao enviar ranking automático: {e}")
+
+# ======================
+# EVENTOS DO BOT
+# ======================
+@bot.event
+async def on_ready():
+    await init_db()  # Inicializa o banco de dados
+    print(f"✅ Bot conectado como {bot.user.name}")
+    print(f"📌 Modo persistente: {'ATIVADO' if PERSISTENT_MODE else 'DESATIVADO'}")
+    print(f"📁 Local dos dados: {os.path.abspath(DADOS_FILE)}")
+    print(f"🔍 Verificação: Arquivo existe? {os.path.exists(DADOS_FILE)}")
+    print(f"📂 Backups: {len(os.listdir(BACKUP_DIR)) if os.path.exists(BACKUP_DIR) else 0} arquivos")
+
+    try:
+        synced = await bot.tree.sync()
+        print(f"✅ {len(synced)} comandos sincronizados")
+    except Exception as e:
+        print(f"⚠️ Erro ao sincronizar comandos: {e}")
+
+    await bot.change_presence(activity=discord.Activity(
+        type=discord.ActivityType.watching,
+        name="/game e /rank"
+    ))
+    bot.loop.create_task(enviar_rankings_automaticos())
+    print("✅ Tarefas automáticas iniciadas")
+
+# ======================
+# INICIALIZAÇÃO
+# ======================
+if __name__ == "__main__":
+    # Garante que os diretórios existam
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR)
+    if not os.path.exists(BACKUP_DIR):
+        os.makedirs(BACKUP_DIR)
+
+    # Cria arquivo de dados se não existir
+    if not os.path.exists(DADOS_FILE):
+        with open(DADOS_FILE, "w") as f:
+            json.dump({"partidas": [], "pontuacao": {}}, f)
+
+    # Registra backup automático ao sair
+    atexit.register(criar_backup_automatico)
+
+    try:
+        bot.run(TOKEN)
+    except Exception as e:
+        print(f"❌ Erro fatal: {e}")
+        traceback.print_exc()
+        # Garante um backup final antes de sair
+        criar_backup_automatico()
