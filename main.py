@@ -16,8 +16,8 @@ from discord import app_commands
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = 709705286083936256
 
-# Configuração de persistência (FORÇADO PARA TRUE)
-PERSISTENT_MODE = True  # Sobrescreve qualquer variável de ambiente
+# Configuração de persistência
+PERSISTENT_MODE = True
 DATA_DIR = "data"
 DADOS_FILE = os.path.join(DATA_DIR, "dados.json")
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
@@ -32,7 +32,8 @@ file_lock = Lock()
 # INICIALIZAÇÃO DO BOT
 # ======================
 intents = discord.Intents.default()
-intents.message_content = True  # Habilita a intenção de conteúdo de mensagem
+intents.message_content = True  # Habilita intenção de conteúdo de mensagem
+intents.members = True  # Necessário para buscar membros
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # ======================
@@ -50,19 +51,11 @@ def init_persistence():
             os.makedirs(BACKUP_DIR)
             print(f"📁 Diretório de backups '{BACKUP_DIR}' criado")
 
-        # Migração de dados antigos (se existirem)
-        old_locations = ["dados.json", "/app/dados.json"]
-        for old_file in old_locations:
-            if os.path.exists(old_file) and not os.path.exists(DADOS_FILE):
-                shutil.move(old_file, DADOS_FILE)
-                print(f"♻️ Dados migrados de '{old_file}' para '{DADOS_FILE}'")
-                break
-
         # Cria arquivo se não existir
         if not os.path.exists(DADOS_FILE):
             with open(DADOS_FILE, "w") as f:
-                json.dump([], f)
-            print(f"📄 Arquivo '{DADOS_FILE}' criado")
+                json.dump({"partidas": [], "pontuacao": {}}, f)
+            print(f"📄 Arquivo '{DADOS_FILE}' criado com estrutura inicial")
 
     except Exception as e:
         print(f"❌ Erro na inicialização: {str(e)}")
@@ -104,26 +97,42 @@ def criar_backup_automatico():
 def carregar_dados():
     """Carrega os dados com tratamento robusto de erros"""
     if not os.path.exists(DADOS_FILE):
-        return []
+        return {"partidas": [], "pontuacao": {}}
 
     try:
         with file_lock:
             # Verifica se o arquivo não está vazio
             if os.path.getsize(DADOS_FILE) == 0:
-                return []
+                return {"partidas": [], "pontuacao": {}}
 
             with open(DADOS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                dados = json.load(f)
+
+                # Migração para nova estrutura se necessário
+                if not isinstance(dados, dict):
+                    dados = {
+                        "partidas": dados,
+                        "pontuacao": {}
+                    }
+                    # Calcula pontuação acumulada inicial
+                    for partida in dados["partidas"]:
+                        total_jogadores = len(partida["jogadores"])
+                        for pos, jogador_id in enumerate(partida["jogadores"]):
+                            pontos = calcular_pontos(pos, total_jogadores)
+                            dados["pontuacao"][jogador_id] = dados["pontuacao"].get(jogador_id, 0) + pontos
+                    salvar_dados(dados)
+
+                return dados
     except json.JSONDecodeError as e:
         print(f"⚠️ Erro ao decodificar JSON (arquivo pode estar corrompido): {e}")
         corrupt_file = backup_corrupt_file()
         if corrupt_file:
             print(f"⚠️ Arquivo corrompido salvo em: {corrupt_file}")
-        return []
+        return {"partidas": [], "pontuacao": {}}
     except Exception as e:
         print(f"⚠️ Erro inesperado ao carregar dados: {e}")
         traceback.print_exc()
-        return []
+        return {"partidas": [], "pontuacao": {}}
 
 def salvar_dados(dados):
     """Salva os dados com tratamento robusto de erros"""
@@ -181,11 +190,13 @@ def filtrar_partidas_por_periodo_e_jogo(dados, periodo=None, jogo=None):
     else:
         limite = None
 
-    return [p for p in dados if (not limite or datetime.fromisoformat(p["data"]) >= limite) and 
+    partidas = dados.get("partidas", [])
+    return [p for p in partidas if (not limite or datetime.fromisoformat(p["data"]) >= limite) and 
                                (not jogo or p["jogo"].lower() == jogo.lower())]
 
 def obter_jogos_unicos(dados):
-    return sorted({p["jogo"].lower() for p in dados})
+    partidas = dados.get("partidas", [])
+    return sorted({p["jogo"].lower() for p in partidas})
 
 async def criar_embed_ranking(partidas, titulo):
     estatisticas = {}
@@ -224,8 +235,7 @@ async def criar_embed_ranking(partidas, titulo):
                 "vitorias": stats["vitorias"],
                 "fracassos": stats["fracassos"]
             })
-        except Exception as e:
-            print(f"⚠️ Erro ao buscar jogador {jogador_id}: {e}")
+        except:
             continue
 
     ranking.sort(key=lambda x: x["pontos"], reverse=True)
@@ -242,6 +252,88 @@ async def criar_embed_ranking(partidas, titulo):
         )
 
     return mensagem.strip()
+
+# ======================
+# COMANDOS DE GERENCIAMENTO DE DADOS
+# ======================
+@bot.tree.command(name="get_data", description="📥 Baixa o arquivo de dados (apenas admin)")
+@app_commands.default_permissions(administrator=True)
+async def download_data(interaction: discord.Interaction):
+    """Envia o arquivo de dados atual"""
+    try:
+        dados = carregar_dados()
+
+        # Garante que o arquivo existe
+        if not os.path.exists(DADOS_FILE):
+            with open(DADOS_FILE, "w") as f:
+                json.dump(dados, f)
+
+        await interaction.response.send_message(
+            "📤 Aqui está o arquivo de dados atual:",
+            file=discord.File(DADOS_FILE),
+            ephemeral=True
+        )
+    except Exception as e:
+        await interaction.response.send_message(
+            f"❌ Erro ao preparar arquivo para download: {str(e)}",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="view_data", description="👁️ Mostra os dados atuais (apenas admin)")
+@app_commands.default_permissions(administrator=True)
+async def view_data(interaction: discord.Interaction):
+    """Mostra os dados atuais formatados"""
+    try:
+        dados = carregar_dados()
+
+        # Formata os dados para exibição
+        formatted_data = json.dumps(dados, indent=2, ensure_ascii=False)
+
+        # Divide em partes se for muito grande
+        if len(formatted_data) > 1500:
+            parts = [formatted_data[i:i+1500] for i in range(0, len(formatted_data), 1500)]
+            await interaction.response.send_message(
+                "📊 Dados atuais (parte 1/{}):```json\n{}```".format(len(parts), parts[0]),
+                ephemeral=True
+            )
+            for part in parts[1:]:
+                await interaction.followup.send(
+                    "```json\n{}```".format(part),
+                    ephemeral=True
+                )
+        else:
+            await interaction.response.send_message(
+                f"📊 Dados atuais:```json\n{formatted_data}```",
+                ephemeral=True
+            )
+    except Exception as e:
+        await interaction.response.send_message(
+            f"❌ Erro ao exibir dados: {str(e)}",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="backup", description="💾 Cria um backup dos dados (apenas admin)")
+@app_commands.default_permissions(administrator=True)
+async def create_backup(interaction: discord.Interaction):
+    """Cria um backup manual dos dados"""
+    try:
+        criar_backup_automatico()
+
+        # Lista os backups disponíveis
+        backups = [f for f in os.listdir(BACKUP_DIR) if f.startswith("dados_backup_")]
+        backups.sort(reverse=True)
+
+        await interaction.response.send_message(
+            f"✅ Backup criado com sucesso!\n"
+            f"Últimos backups disponíveis:\n" + 
+            "\n".join(backups[:3]),
+            ephemeral=True
+        )
+    except Exception as e:
+        await interaction.response.send_message(
+            f"❌ Erro ao criar backup: {str(e)}",
+            ephemeral=True
+        )
 
 # ======================
 # COMANDOS DE REGISTRO
@@ -274,88 +366,45 @@ async def registrar_partida(interaction: discord.Interaction, jogo: str, duracao
             ephemeral=True
         )
 
-    partida = {
-        "jogo": jogo,
-        "duracao": duracao,
-        "data": datetime.now().isoformat(),
-        "jogadores": [str(j.id) for j in jogadores]
-    }
-
     try:
         dados = carregar_dados()
-        dados.append(partida)
+
+        # Cria a nova partida
+        nova_partida = {
+            "jogo": jogo,
+            "duracao": duracao,
+            "data": datetime.now().isoformat(),
+            "jogadores": [str(j.id) for j in jogadores]
+        }
+
+        # Adiciona à lista de partidas
+        dados["partidas"].append(nova_partida)
+
+        # Atualiza pontuação acumulada
+        total_jogadores = len(jogadores)
+        for pos, jogador in enumerate(jogadores):
+            pontos = calcular_pontos(pos, total_jogadores)
+            jogador_id = str(jogador.id)
+            dados["pontuacao"][jogador_id] = dados["pontuacao"].get(jogador_id, 0) + pontos
+
         salvar_dados(dados)
 
+        # Monta mensagem de resultado
         resultado = f"🎮 {jogo} | ⏱️ {duracao}\n\n"
         for idx, jogador in enumerate(jogadores):
             pontos = calcular_pontos(idx, len(jogadores))
             resultado += f"{POSICOES[idx]} {jogador.display_name} | {pontos:+} ponto{'s' if pontos != 1 else ''}\n"
 
+        # Adiciona pontuação acumulada
+        resultado += "\n📊 Pontuação Acumulada:\n"
+        for jogador in jogadores:
+            jogador_id = str(jogador.id)
+            resultado += f"{jogador.display_name}: {dados['pontuacao'].get(jogador_id, 0)} pts\n"
+
         await interaction.response.send_message(resultado)
     except Exception as e:
         await interaction.response.send_message(
             f"❌ Erro ao registrar partida: {str(e)}",
-            ephemeral=True
-        )
-        traceback.print_exc()
-
-@bot.tree.command(name="correct", description="Corrige a última partida registrada")
-@app_commands.describe(
-    jogo="Nome correto do jogo",
-    duracao="Duração correta (ex: 1h30m)",
-    jogador1="1º lugar correto (vencedor)",
-    jogador2="2º lugar correto",
-    jogador3="3º lugar correto (opcional)",
-    jogador4="4º lugar correto (opcional)",
-    jogador5="5º lugar correto (opcional)",
-    jogador6="6º lugar correto (opcional)",
-    jogador7="7º lugar correto (opcional)",
-    jogador8="8º lugar correto (opcional)"
-)
-async def correct_partida(interaction: discord.Interaction, jogo: str, duracao: str,
-                         jogador1: discord.Member, jogador2: discord.Member,
-                         jogador3: discord.Member = None, jogador4: discord.Member = None,
-                         jogador5: discord.Member = None, jogador6: discord.Member = None,
-                         jogador7: discord.Member = None, jogador8: discord.Member = None):
-
-    jogadores = [j for j in [jogador1, jogador2, jogador3, jogador4,
-                            jogador5, jogador6, jogador7, jogador8] if j is not None]
-
-    if len(jogadores) < MINIMO_JOGADORES:
-        return await interaction.response.send_message(
-            f"❌ Mínimo de {MINIMO_JOGADORES} jogadores para registrar!",
-            ephemeral=True
-        )
-
-    try:
-        dados = carregar_dados()
-        if not dados:
-            return await interaction.response.send_message("❌ Nenhuma partida para corrigir!", ephemeral=True)
-
-        # Remove a última partida
-        ultima_partida = dados.pop()
-        salvar_dados(dados)
-
-        # Registra a partida corrigida
-        partida_corrigida = {
-            "jogo": jogo,
-            "duracao": duracao,
-            "data": ultima_partida["data"],  # Mantém a data original
-            "jogadores": [str(j.id) for j in jogadores]
-        }
-
-        dados.append(partida_corrigida)
-        salvar_dados(dados)
-
-        resultado = f"✅ **Partida corrigida com sucesso!**\n\n🎮 {jogo} | ⏱️ {duracao}\n\n"
-        for idx, jogador in enumerate(jogadores):
-            pontos = calcular_pontos(idx, len(jogadores))
-            resultado += f"{POSICOES[idx]} {jogador.display_name} | {pontos:+} ponto{'s' if pontos != 1 else ''}\n"
-
-        await interaction.response.send_message(resultado)
-    except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Erro ao corrigir partida: {str(e)}",
             ephemeral=True
         )
         traceback.print_exc()
@@ -628,8 +677,8 @@ async def on_ready():
     print(f"📂 Backups: {len(os.listdir(BACKUP_DIR)) if os.path.exists(BACKUP_DIR) else 0} arquivos")
 
     try:
-        await bot.tree.sync()
-        print("✅ Comandos sincronizados")
+        synced = await bot.tree.sync()
+        print(f"✅ {len(synced)} comandos sincronizados")
     except Exception as e:
         print(f"⚠️ Erro ao sincronizar comandos: {e}")
 
@@ -644,23 +693,19 @@ async def on_ready():
 # INICIALIZAÇÃO
 # ======================
 if __name__ == "__main__":
-    # Verificação final de persistência
+    # Garante que os diretórios existam
     if not os.path.exists(DATA_DIR):
         os.makedirs(DATA_DIR)
-
     if not os.path.exists(BACKUP_DIR):
         os.makedirs(BACKUP_DIR)
 
+    # Cria arquivo de dados se não existir
     if not os.path.exists(DADOS_FILE):
         with open(DADOS_FILE, "w") as f:
-            json.dump([], f)
+            json.dump({"partidas": [], "pontuacao": {}}, f)
 
     # Registra backup automático ao sair
     atexit.register(criar_backup_automatico)
-
-    # Verifica e cria backup na inicialização
-    if os.path.exists(DADOS_FILE) and os.path.getsize(DADOS_FILE) > 0:
-        criar_backup_automatico()
 
     try:
         bot.run(TOKEN)
