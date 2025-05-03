@@ -39,7 +39,6 @@ MINIMO_JOGADORES = 2
 file_lock = Lock()
 
 def get_db_connection():
-    """Estabelece conexão com o PostgreSQL"""
     db_url = os.getenv('DATABASE_URL')
     result = urlparse(db_url)
 
@@ -53,58 +52,60 @@ def get_db_connection():
     return conn
 
 async def get_async_db_connection():
+    db_url = os.getenv('DATABASE_URL')
+    return await asyncpg.connect(db_url)
+
+async def get_async_db_connection():
     """Conexão assíncrona para operações do bot"""
     db_url = os.getenv('DATABASE_URL')
     return await asyncpg.connect(db_url)
 
-async def init_db():
-    """Cria as tabelas necessárias no PostgreSQL"""
-    commands = (
-        """
-        CREATE TABLE IF NOT EXISTS partidas (
-            id SERIAL PRIMARY KEY,
-            jogo VARCHAR(255) NOT NULL,
-            duracao VARCHAR(50) NOT NULL,
-            data TIMESTAMP NOT NULL
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS jogadores_partida (
-            partida_id INTEGER REFERENCES partidas(id),
-            jogador_id BIGINT NOT NULL,
-            posicao INTEGER NOT NULL,
-            pontos INTEGER NOT NULL,
-            PRIMARY KEY (partida_id, jogador_id)
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS pontuacao_acumulada (
-            jogador_id BIGINT PRIMARY KEY,
-            pontos INTEGER NOT NULL DEFAULT 0,
-            partidas INTEGER NOT NULL DEFAULT 0,
-            vitorias INTEGER NOT NULL DEFAULT 0,
-            fracassos INTEGER NOT NULL DEFAULT 0
-        )
-        """
-    )
+            async def init_db():
+                conn = None
+                try:
+                    conn = get_db_connection()
+                    cur = conn.cursor()
 
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
+                    # Cria tabela de partidas
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS partidas (
+                            id SERIAL PRIMARY KEY,
+                            jogo VARCHAR(255) NOT NULL,
+                            duracao VARCHAR(50) NOT NULL,
+                            data TIMESTAMP NOT NULL
+                        )
+                    """)
 
-        for command in commands:
-            cur.execute(command)
+                    # Cria tabela de jogadores_partida
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS jogadores_partida (
+                            partida_id INTEGER REFERENCES partidas(id),
+                            jogador_id BIGINT NOT NULL,
+                            posicao INTEGER NOT NULL,
+                            pontos INTEGER NOT NULL,
+                            PRIMARY KEY (partida_id, jogador_id)
+                        )
+                    """)
 
-        cur.close()
-        conn.commit()
-        print("✅ Tabelas criadas com sucesso no PostgreSQL")
-    except Exception as e:
-        print(f"❌ Erro ao criar tabelas: {e}")
-        traceback.print_exc()
-    finally:
-        if conn is not None:
-            conn.close()
+                    # Cria tabela de pontuação acumulada
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS pontuacao_acumulada (
+                            jogador_id BIGINT PRIMARY KEY,
+                            pontos INTEGER NOT NULL DEFAULT 0,
+                            partidas INTEGER NOT NULL DEFAULT 0,
+                            vitorias INTEGER NOT NULL DEFAULT 0,
+                            fracassos INTEGER NOT NULL DEFAULT 0
+                        )
+                    """)
+
+                    conn.commit()
+                    cur.close()
+                    print("✅ Banco de dados inicializado com sucesso!")
+                except Exception as e:
+                    print(f"❌ Erro ao inicializar banco de dados: {e}")
+                finally:
+                    if conn is not None:
+                        conn.close()
 
 # ======================
 # INICIALIZAÇÃO DO BOT
@@ -962,6 +963,8 @@ async def enviar_ranking_automatico(periodo, titulo, canal):
 # ======================
 @bot.event
 async def on_ready():
+    await init_db()  # Inicializa o banco de dados
+    print(f"✅ Bot conectado como {bot.user.name}")
     print(f"\n✅ Bot conectado como {bot.user.name}")
     print(f"📌 Modo persistente: {'ATIVADO' if PERSISTENT_MODE else 'DESATIVADO'}")
     print(f"📁 Local dos dados: {os.path.abspath(DADOS_FILE)}")
