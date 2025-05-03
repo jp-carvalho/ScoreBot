@@ -263,13 +263,10 @@ async def upload_data(interaction: discord.Interaction, arquivo: discord.Attachm
         # 6. Substitui o arquivo
         shutil.move(temp_path, DADOS_FILE)
 
-        # 7. Limpeza
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
+        # 7. Confirmação
         await interaction.response.send_message(
             "✅ Banco de dados atualizado com sucesso!\n"
-            f"📊 Partidas: {len(dados['partidas']}\n"
+            f"📊 Partidas: {len(dados['partidas'])}\n"  # CORREÇÃO APLICADA AQUI
             f"👥 Jogadores: {len(dados['pontuacao'])}",
             ephemeral=True
         )
