@@ -4,7 +4,8 @@ import json
 import asyncio
 import shutil
 import atexit
-import traceback
+import base64
+import zlib
 from threading import Lock
 from datetime import datetime, timedelta
 from discord.ext import commands
@@ -18,6 +19,8 @@ GUILD_ID = 709705286083936256
 
 # Configuração de persistência
 PERSISTENT_MODE = True
+USE_ENV_STORAGE = True  # Usar variáveis de ambiente para armazenamento
+DATA_ENV_VAR = "GAME_RANKING_DATA"  # Nome da variável de ambiente
 DATA_DIR = "data"
 DADOS_FILE = os.path.join(DATA_DIR, "dados.json")
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
@@ -32,17 +35,17 @@ file_lock = Lock()
 # INICIALIZAÇÃO DO BOT
 # ======================
 intents = discord.Intents.default()
-intents.message_content = True  # Habilita intenção de conteúdo de mensagem
-intents.members = True  # Necessário para buscar membros
+intents.message_content = True
+intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # ======================
-# SISTEMA DE PERSISTÊNCIA
+# SISTEMA DE PERSISTÊNCIA MELHORADO
 # ======================
 def init_persistence():
     """Garante a estrutura de arquivos e migra dados se necessário"""
     try:
-        # Cria diretórios se não existirem
+        # Cria diretórios se não existirem (para backups locais)
         if not os.path.exists(DATA_DIR):
             os.makedirs(DATA_DIR)
             print(f"📁 Diretório '{DATA_DIR}' criado")
@@ -51,15 +54,72 @@ def init_persistence():
             os.makedirs(BACKUP_DIR)
             print(f"📁 Diretório de backups '{BACKUP_DIR}' criado")
 
-        # Cria arquivo se não existir
-        if not os.path.exists(DADOS_FILE):
-            with open(DADOS_FILE, "w") as f:
-                json.dump({"partidas": [], "pontuacao": {}}, f)
-            print(f"📄 Arquivo '{DADOS_FILE}' criado com estrutura inicial")
+        # Se estivermos usando armazenamento em variável de ambiente
+        if USE_ENV_STORAGE:
+            # Verifica se já existe dados na variável de ambiente
+            env_data = os.getenv(DATA_ENV_VAR)
+            if env_data:
+                print("✅ Dados encontrados na variável de ambiente")
+                # Garante que temos um arquivo local também (para compatibilidade)
+                with open(DADOS_FILE, "w") as f:
+                    f.write(decompress_data(env_data))
+            else:
+                print("ℹ️ Nenhum dado encontrado na variável de ambiente")
+                # Cria estrutura inicial se não existir
+                initial_data = {"partidas": [], "pontuacao": {}}
+                with open(DADOS_FILE, "w") as f:
+                    json.dump(initial_data, f)
+                # Salva na variável de ambiente também
+                update_env_storage(initial_data)
+        else:
+            # Modo tradicional (arquivo local)
+            if not os.path.exists(DADOS_FILE):
+                with open(DADOS_FILE, "w") as f:
+                    json.dump({"partidas": [], "pontuacao": {}}, f)
+                print(f"📄 Arquivo '{DADOS_FILE}' criado com estrutura inicial")
 
     except Exception as e:
         print(f"❌ Erro na inicialização: {str(e)}")
         traceback.print_exc()
+
+def compress_data(data):
+    """Comprime os dados para armazenamento eficiente"""
+    json_str = json.dumps(data, ensure_ascii=False)
+    return base64.b64encode(zlib.compress(json_str.encode('utf-8'))).decode('utf-8')
+
+def decompress_data(compressed_data):
+    """Descomprime os dados armazenados"""
+    try:
+        decompressed = zlib.decompress(base64.b64decode(compressed_data.encode('utf-8'))).decode('utf-8')
+        return decompressed
+    except:
+        # Fallback para dados não comprimidos (backward compatibility)
+        return compressed_data
+
+def update_env_storage(data):
+    """Atualiza os dados na variável de ambiente (simulado)"""
+    if USE_ENV_STORAGE:
+        compressed = compress_data(data)
+        # No Railway, você precisaria configurar isso manualmente ou via API
+        # Aqui estamos apenas simulando para desenvolvimento
+        os.environ[DATA_ENV_VAR] = compressed
+        # Também salvamos localmente para backup
+        with open(DADOS_FILE, "w") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return True
+    return False
+
+def get_env_storage():
+    """Obtém os dados da variável de ambiente"""
+    if USE_ENV_STORAGE:
+        env_data = os.getenv(DATA_ENV_VAR)
+        if env_data:
+            try:
+                return json.loads(decompress_data(env_data))
+            except:
+                # Fallback para arquivo local se a variável estiver corrompida
+                pass
+    return None
 
 def backup_corrupt_file():
     """Faz backup de um arquivo possivelmente corrompido"""
@@ -78,16 +138,19 @@ def backup_corrupt_file():
 def criar_backup_automatico():
     """Cria um backup automático dos dados"""
     try:
-        if not os.path.exists(DADOS_FILE) or os.path.getsize(DADOS_FILE) == 0:
+        dados = carregar_dados()
+        if not dados:
             return
 
         # Backup diário (sobrescreve se já existir para o dia)
         backup_file = os.path.join(BACKUP_DIR, f"dados_backup_{datetime.now().strftime('%Y%m%d')}.json")
-        shutil.copy2(DADOS_FILE, backup_file)
+        with open(backup_file, "w") as f:
+            json.dump(dados, f, indent=2, ensure_ascii=False)
 
         # Backup com timestamp (mantém histórico)
         timestamp_backup = os.path.join(BACKUP_DIR, f"dados_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-        shutil.copy2(DADOS_FILE, timestamp_backup)
+        with open(timestamp_backup, "w") as f:
+            json.dump(dados, f, indent=2, ensure_ascii=False)
 
         print(f"✅ Backup automático criado em: {backup_file}")
     except Exception as e:
@@ -96,12 +159,18 @@ def criar_backup_automatico():
 
 def carregar_dados():
     """Carrega os dados com tratamento robusto de erros"""
+    # Primeiro tenta carregar da variável de ambiente
+    if USE_ENV_STORAGE:
+        env_data = get_env_storage()
+        if env_data is not None:
+            return env_data
+
+    # Fallback para arquivo local
     if not os.path.exists(DADOS_FILE):
         return {"partidas": [], "pontuacao": {}}
 
     try:
         with file_lock:
-            # Verifica se o arquivo não está vazio
             if os.path.getsize(DADOS_FILE) == 0:
                 return {"partidas": [], "pontuacao": {}}
 
@@ -154,7 +223,11 @@ def salvar_dados(dados):
             else:
                 shutil.move(temp_file, DADOS_FILE)
 
-        print("✅ Dados salvos com sucesso")
+        # Atualiza a variável de ambiente também
+        if USE_ENV_STORAGE:
+            update_env_storage(dados)
+
+        print("✅ Dados salvos com sucesso (arquivo + variável de ambiente)")
     except Exception as e:
         print(f"⚠️ Erro ao salvar dados: {e}")
         traceback.print_exc()
