@@ -312,29 +312,6 @@ async def view_data(interaction: discord.Interaction):
             ephemeral=True
         )
 
-@bot.tree.command(name="backup", description="💾 Cria um backup dos dados (apenas admin)")
-@app_commands.default_permissions(administrator=True)
-async def create_backup(interaction: discord.Interaction):
-    """Cria um backup manual dos dados"""
-    try:
-        criar_backup_automatico()
-
-        # Lista os backups disponíveis
-        backups = [f for f in os.listdir(BACKUP_DIR) if f.startswith("dados_backup_")]
-        backups.sort(reverse=True)
-
-        await interaction.response.send_message(
-            f"✅ Backup criado com sucesso!\n"
-            f"Últimos backups disponíveis:\n" + 
-            "\n".join(backups[:3]),
-            ephemeral=True
-        )
-    except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Erro ao criar backup: {str(e)}",
-            ephemeral=True
-        )
-
 # ======================
 # COMANDOS DE REGISTRO
 # ======================
