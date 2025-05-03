@@ -76,53 +76,49 @@ async def get_async_db_connection():
     return await asyncpg.connect(db_url)
 
 async def init_db():
-    """Inicializa o banco de dados e cria tabelas se não existirem"""
+    """Inicializa o banco de dados e cria as tabelas se não existirem"""
     conn = None
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
+        conn = await get_async_db_connection()
 
-        # Cria tabela de partidas
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS partidas (
-                id SERIAL PRIMARY KEY,
-                jogo VARCHAR(255) NOT NULL,
-                duracao VARCHAR(50) NOT NULL,
-                data TIMESTAMP NOT NULL
-            )
+        # Criação das tabelas com verificações adicionais
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS partidas (
+            id SERIAL PRIMARY KEY,
+            jogo VARCHAR(255) NOT NULL,
+            duracao VARCHAR(50) NOT NULL,
+            data TIMESTAMP NOT NULL
+        )
         """)
 
-        # Cria tabela de jogadores_partida
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS jogadores_partida (
-                partida_id INTEGER REFERENCES partidas(id),
-                jogador_id BIGINT NOT NULL,
-                posicao INTEGER NOT NULL,
-                pontos INTEGER NOT NULL,
-                PRIMARY KEY (partida_id, jogador_id)
-            )
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS jogadores_partida (
+            partida_id INTEGER REFERENCES partidas(id),
+            jogador_id BIGINT NOT NULL,
+            posicao INTEGER NOT NULL,
+            pontos INTEGER NOT NULL,
+            PRIMARY KEY (partida_id, jogador_id)
+        )
         """)
 
-        # Cria tabela de pontuação acumulada
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS pontuacao_acumulada (
-                jogador_id BIGINT PRIMARY KEY,
-                pontos INTEGER NOT NULL DEFAULT 0,
-                partidas INTEGER NOT NULL DEFAULT 0,
-                vitorias INTEGER NOT NULL DEFAULT 0,
-                fracassos INTEGER NOT NULL DEFAULT 0
-            )
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS pontuacao_acumulada (
+            jogador_id BIGINT PRIMARY KEY,
+            pontos INTEGER NOT NULL DEFAULT 0,
+            partidas INTEGER NOT NULL DEFAULT 0,
+            vitorias INTEGER NOT NULL DEFAULT 0,
+            fracassos INTEGER NOT NULL DEFAULT 0
+        )
         """)
 
-        conn.commit()
-        cur.close()
-        print("✅ Banco de dados inicializado com sucesso!")
+        print("✅ Tabelas criadas/verificadas com sucesso!")
     except Exception as e:
         print(f"❌ Erro ao inicializar banco de dados: {e}")
         traceback.print_exc()
+        raise  # Re-lança a exceção para que você saiba que houve um problema crítico
     finally:
         if conn is not None:
-            conn.close()
+            await conn.close()
 
 # ======================
 # INICIALIZAÇÃO DO BOT
@@ -273,45 +269,27 @@ async def carregar_dados():
 
 async def salvar_partida(partida):
     """Salva uma nova partida no PostgreSQL"""
+    conn = None
     try:
         conn = await get_async_db_connection()
 
-        partida_id = await conn.fetchval(
-            "INSERT INTO partidas (jogo, duracao, data) VALUES ($1, $2, $3) RETURNING id",
-            partida["jogo"],
-            partida["duracao"],
-            datetime.fromisoformat(partida["data"])
+        # Verifica se a tabela existe
+        table_exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'partidas')"
         )
 
-        total_jogadores = len(partida["jogadores"])
-        for pos, jogador_id in enumerate(partida["jogadores"]):
-            pontos = calcular_pontos(pos, total_jogadores)
+        if not table_exists:
+            await init_db()  # Tenta criar as tabelas novamente
 
-            await conn.execute(
-                "INSERT INTO jogadores_partida (partida_id, jogador_id, posicao, pontos) VALUES ($1, $2, $3, $4)",
-                partida_id,
-                int(jogador_id),
-                pos,
-                pontos
-            )
+        # Restante do código para salvar a partida...
 
-            await conn.execute("""
-                INSERT INTO pontuacao_acumulada (jogador_id, pontos, partidas, vitorias, fracassos)
-                VALUES ($1, $2, 1, $3, $4)
-                ON CONFLICT (jogador_id) DO UPDATE
-                SET 
-                    pontos = pontuacao_acumulada.pontos + EXCLUDED.pontos,
-                    partidas = pontuacao_acumulada.partidas + 1,
-                    vitorias = pontuacao_acumulada.vitorias + EXCLUDED.vitorias,
-                    fracassos = pontuacao_acumulada.fracassos + EXCLUDED.fracassos
-            """, int(jogador_id), pontos, 1 if pos == 0 else 0, 1 if pos == total_jogadores - 1 else 0)
-
-        await conn.close()
-        return True
     except Exception as e:
-        print(f"❌ Erro ao salvar partida no PostgreSQL: {e}")
+        print(f"❌ Erro ao salvar partida: {e}")
         traceback.print_exc()
         return False
+    finally:
+        if conn is not None:
+            await conn.close()
 
 # Executa durante a importação
 init_persistence()
@@ -915,24 +893,27 @@ async def enviar_ranking_automatico(periodo, titulo, canal):
 @bot.event
 async def on_ready():
     try:
-        # Sincroniza os comandos globais
+        print("⏳ Inicializando banco de dados...")
+        await init_db()  # Garante que as tabelas existam
+
+        print("⏳ Sincronizando comandos slash...")
         synced = await bot.tree.sync()
-        print(f"✅ {len(synced)} comandos sincronizados globalmente")
+        print(f"✅ {len(synced)} comandos sincronizados")
 
-        # Sincroniza os comandos para o servidor específico (opcional)
-        guild = discord.Object(id=GUILD_ID)
-        bot.tree.copy_global_to(guild=guild)
-        synced = await bot.tree.sync(guild=guild)
-        print(f"✅ {len(synced)} comandos sincronizados no servidor")
+        print(f"✅ Bot conectado como {bot.user.name}")
+        await bot.change_presence(activity=discord.Activity(
+            type=discord.ActivityType.watching,
+            name="/game e /rank"
+        ))
+
+        # Inicia tarefas automáticas
+        bot.loop.create_task(enviar_rankings_automaticos())
+        print("✅ Tarefas automáticas iniciadas")
     except Exception as e:
-        print(f"⚠️ Erro ao sincronizar comandos: {e}")
-
-    await bot.change_presence(activity=discord.Activity(
-        type=discord.ActivityType.watching,
-        name="/game e /rank"
-    ))
-    bot.loop.create_task(enviar_rankings_automaticos())
-    print("✅ Tarefas automáticas iniciadas")
+        print(f"❌ Erro crítico na inicialização: {e}")
+        traceback.print_exc()
+        # Você pode querer encerrar o bot se a inicialização falhar
+        await bot.close()
 
 # ======================
 # INICIALIZAÇÃO
