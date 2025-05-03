@@ -32,7 +32,7 @@ file_lock = Lock()
 # INICIALIZAÇÃO DO BOT
 # ======================
 intents = discord.Intents.default()
-intents.members = True  # Necessário para buscar membros
+intents.message_content = True  # Habilita a intenção de conteúdo de mensagem
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # ======================
