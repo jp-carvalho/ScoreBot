@@ -57,16 +57,19 @@ file_lock = Lock()
 # ======================
 def get_db_connection():
     db_url = os.getenv('DATABASE_URL')
-    result = urlparse(db_url)
+    if not db_url:
+        raise ValueError("DATABASE_URL não está configurada")
 
-    conn = psycopg2.connect(
-        database=result.path[1:],
-        user=result.username,
-        password=result.password,
-        host=result.hostname,
-        port=result.port
-    )
-    return conn
+    # Converte a URL do Railway para o formato que o psycopg2 entende
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+    try:
+        conn = psycopg2.connect(db_url, sslmode='require')
+        return conn
+    except Exception as e:
+        print(f"❌ Erro ao conectar ao PostgreSQL: {e}")
+        raise
 
 async def get_async_db_connection():
     db_url = os.getenv('DATABASE_URL')
@@ -911,16 +914,16 @@ async def enviar_ranking_automatico(periodo, titulo, canal):
 # ======================
 @bot.event
 async def on_ready():
-    await init_db()  # Inicializa o banco de dados
-    print(f"✅ Bot conectado como {bot.user.name}")
-    print(f"📌 Modo persistente: {'ATIVADO' if PERSISTENT_MODE else 'DESATIVADO'}")
-    print(f"📁 Local dos dados: {os.path.abspath(DADOS_FILE)}")
-    print(f"🔍 Verificação: Arquivo existe? {os.path.exists(DADOS_FILE)}")
-    print(f"📂 Backups: {len(os.listdir(BACKUP_DIR)) if os.path.exists(BACKUP_DIR) else 0} arquivos")
-
     try:
+        # Sincroniza os comandos globais
         synced = await bot.tree.sync()
-        print(f"✅ {len(synced)} comandos sincronizados")
+        print(f"✅ {len(synced)} comandos sincronizados globalmente")
+
+        # Sincroniza os comandos para o servidor específico (opcional)
+        guild = discord.Object(id=GUILD_ID)
+        bot.tree.copy_global_to(guild=guild)
+        synced = await bot.tree.sync(guild=guild)
+        print(f"✅ {len(synced)} comandos sincronizados no servidor")
     except Exception as e:
         print(f"⚠️ Erro ao sincronizar comandos: {e}")
 
