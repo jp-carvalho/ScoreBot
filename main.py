@@ -261,21 +261,40 @@ async def criar_embed_ranking(partidas, titulo):
 async def download_data(interaction: discord.Interaction):
     """Envia o arquivo de dados atual"""
     try:
+        # Garante que o diretório e arquivo existam
+        if not os.path.exists(DATA_DIR):
+            os.makedirs(DATA_DIR)
+
         dados = carregar_dados()
 
-        # Garante que o arquivo existe
+        # Garante que o arquivo existe e tem conteúdo
         if not os.path.exists(DADOS_FILE):
             with open(DADOS_FILE, "w") as f:
-                json.dump(dados, f)
+                json.dump(dados, f, indent=2)
 
+        # Verifica se o arquivo está acessível
+        if os.path.getsize(DADOS_FILE) == 0:
+            await interaction.response.send_message(
+                "⚠️ O arquivo de dados está vazio!",
+                ephemeral=True
+            )
+            return
+
+        # Envia o arquivo
         await interaction.response.send_message(
-            "📤 Aqui está o arquivo de dados atual:",
+            content="📤 Aqui está o arquivo de dados atual:",
             file=discord.File(DADOS_FILE),
             ephemeral=True
         )
+
+        print(f"✅ Arquivo de dados enviado para {interaction.user.name}")
+
     except Exception as e:
+        error_msg = f"❌ Erro ao preparar arquivo para download: {str(e)}"
+        print(error_msg)
+        traceback.print_exc()
         await interaction.response.send_message(
-            f"❌ Erro ao preparar arquivo para download: {str(e)}",
+            error_msg,
             ephemeral=True
         )
 
