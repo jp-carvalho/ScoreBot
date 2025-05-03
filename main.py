@@ -4,19 +4,11 @@ import json
 import asyncio
 import shutil
 import atexit
-import base64
-import zlib
 import traceback
 from threading import Lock
 from datetime import datetime, timedelta
 from discord.ext import commands
 from discord import app_commands
-import psycopg2
-from psycopg2 import sql
-from psycopg2.extras import DictCursor
-from urllib.parse import urlparse
-import asyncpg
-import subprocess
 
 # ======================
 # CONFIGURAÇÕES GLOBAIS
@@ -25,9 +17,6 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = 709705286083936256
 
 # Configuração de persistência
-PERSISTENT_MODE = True
-USE_ENV_STORAGE = True
-DATA_ENV_VAR = "GAME_RANKING_DATA"
 DATA_DIR = "data"
 DADOS_FILE = os.path.join(DATA_DIR, "dados.json")
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
@@ -35,90 +24,8 @@ POSICOES = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", 
 CANAL_RANKING_ID = 1360294622768926901
 MINIMO_JOGADORES = 2
 
-# Instala dependências automaticamente
-dependencies = [
-    'psycopg2-binary',
-    'asyncpg',
-    'python-dotenv'
-]
-
-for dep in dependencies:
-    try:
-        __import__(dep.split('==')[0])
-    except ImportError:
-        print(f"Instalando {dep}...")
-        subprocess.check_call(['pip', 'install', dep])
-
 # Lock para operações de arquivo
 file_lock = Lock()
-
-# ======================
-# FUNÇÕES DE BANCO DE DADOS
-# ======================
-def get_db_connection():
-    db_url = os.getenv('DATABASE_URL')
-    if not db_url:
-        raise ValueError("DATABASE_URL não está configurada")
-
-    # Converte a URL do Railway para o formato que o psycopg2 entende
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-
-    try:
-        conn = psycopg2.connect(db_url, sslmode='require')
-        return conn
-    except Exception as e:
-        print(f"❌ Erro ao conectar ao PostgreSQL: {e}")
-        raise
-
-async def get_async_db_connection():
-    db_url = os.getenv('DATABASE_URL')
-    return await asyncpg.connect(db_url)
-
-async def init_db():
-    """Inicializa o banco de dados e cria as tabelas se não existirem"""
-    conn = None
-    try:
-        conn = await get_async_db_connection()
-
-        # Criação das tabelas com verificações adicionais
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS partidas (
-            id SERIAL PRIMARY KEY,
-            jogo VARCHAR(255) NOT NULL,
-            duracao VARCHAR(50) NOT NULL,
-            data TIMESTAMP NOT NULL
-        )
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS jogadores_partida (
-            partida_id INTEGER REFERENCES partidas(id),
-            jogador_id BIGINT NOT NULL,
-            posicao INTEGER NOT NULL,
-            pontos INTEGER NOT NULL,
-            PRIMARY KEY (partida_id, jogador_id)
-        )
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS pontuacao_acumulada (
-            jogador_id BIGINT PRIMARY KEY,
-            pontos INTEGER NOT NULL DEFAULT 0,
-            partidas INTEGER NOT NULL DEFAULT 0,
-            vitorias INTEGER NOT NULL DEFAULT 0,
-            fracassos INTEGER NOT NULL DEFAULT 0
-        )
-        """)
-
-        print("✅ Tabelas criadas/verificadas com sucesso!")
-    except Exception as e:
-        print(f"❌ Erro ao inicializar banco de dados: {e}")
-        traceback.print_exc()
-        raise  # Re-lança a exceção para que você saiba que houve um problema crítico
-    finally:
-        if conn is not None:
-            await conn.close()
 
 # ======================
 # INICIALIZAÇÃO DO BOT
@@ -129,10 +36,10 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # ======================
-# SISTEMA DE PERSISTÊNCIA
+# SISTEMA DE PERSISTÊNCIA (JSON)
 # ======================
 def init_persistence():
-    """Garante a estrutura de arquivos e migra dados se necessário"""
+    """Garante a estrutura de arquivos e diretórios"""
     try:
         if not os.path.exists(DATA_DIR):
             os.makedirs(DATA_DIR)
@@ -142,61 +49,46 @@ def init_persistence():
             os.makedirs(BACKUP_DIR)
             print(f"📁 Diretório de backups '{BACKUP_DIR}' criado")
 
-        if USE_ENV_STORAGE:
-            env_data = os.getenv(DATA_ENV_VAR)
-            if env_data:
-                print("✅ Dados encontrados na variável de ambiente")
-                with open(DADOS_FILE, "w") as f:
-                    f.write(decompress_data(env_data))
-            else:
-                print("ℹ️ Nenhum dado encontrado na variável de ambiente")
-                initial_data = {"partidas": [], "pontuacao": {}}
-                with open(DADOS_FILE, "w") as f:
-                    json.dump(initial_data, f)
-                update_env_storage(initial_data)
-        else:
-            if not os.path.exists(DADOS_FILE):
-                with open(DADOS_FILE, "w") as f:
-                    json.dump({"partidas": [], "pontuacao": {}}, f)
-                print(f"📄 Arquivo '{DADOS_FILE}' criado com estrutura inicial")
+        if not os.path.exists(DADOS_FILE):
+            with open(DADOS_FILE, "w") as f:
+                json.dump({"partidas": [], "pontuacao": {}}, f)
+            print(f"📄 Arquivo '{DADOS_FILE}' criado com estrutura inicial")
 
     except Exception as e:
         print(f"❌ Erro na inicialização: {str(e)}")
         traceback.print_exc()
 
-def compress_data(data):
-    """Comprime os dados para armazenamento eficiente"""
-    json_str = json.dumps(data, ensure_ascii=False)
-    return base64.b64encode(zlib.compress(json_str.encode('utf-8'))).decode('utf-8')
-
-def decompress_data(compressed_data):
-    """Descomprime os dados armazenados"""
+def carregar_dados():
+    """Carrega os dados do arquivo JSON"""
     try:
-        decompressed = zlib.decompress(base64.b64decode(compressed_data.encode('utf-8'))).decode('utf-8')
-        return decompressed
-    except:
-        return compressed_data
+        with file_lock:
+            if not os.path.exists(DADOS_FILE) or os.path.getsize(DADOS_FILE) == 0:
+                return {"partidas": [], "pontuacao": {}}
 
-def update_env_storage(data):
-    """Atualiza os dados na variável de ambiente"""
-    if USE_ENV_STORAGE:
-        compressed = compress_data(data)
-        os.environ[DATA_ENV_VAR] = compressed
-        with open(DADOS_FILE, "w") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        return True
-    return False
+            with open(DADOS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"❌ Erro ao carregar dados: {e}")
+        backup_corrupt_file()
+        return {"partidas": [], "pontuacao": {}}
 
-def get_env_storage():
-    """Obtém os dados da variável de ambiente"""
-    if USE_ENV_STORAGE:
-        env_data = os.getenv(DATA_ENV_VAR)
-        if env_data:
-            try:
-                return json.loads(decompress_data(env_data))
-            except:
-                pass
-    return None
+def salvar_dados(dados):
+    """Salva os dados no arquivo JSON"""
+    try:
+        with file_lock:
+            temp_file = DADOS_FILE + ".tmp"
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(dados, f, indent=2, ensure_ascii=False)
+
+            if os.path.exists(DADOS_FILE):
+                os.replace(temp_file, DADOS_FILE)
+            else:
+                shutil.move(temp_file, DADOS_FILE)
+    except Exception as e:
+        print(f"❌ Erro ao salvar dados: {e}")
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        raise
 
 def backup_corrupt_file():
     """Faz backup de um arquivo possivelmente corrompido"""
@@ -207,10 +99,8 @@ def backup_corrupt_file():
         corrupt_backup = os.path.join(BACKUP_DIR, f"dados_corruptos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
         shutil.copy2(DADOS_FILE, corrupt_backup)
         print(f"⚠️ Backup do arquivo corrompido salvo em: {corrupt_backup}")
-        return corrupt_backup
     except Exception as e:
         print(f"⚠️ Falha ao criar backup do arquivo corrompido: {e}")
-        return None
 
 def criar_backup_automatico():
     """Cria um backup automático dos dados"""
@@ -219,10 +109,12 @@ def criar_backup_automatico():
         if not dados:
             return
 
+        # Backup diário
         backup_file = os.path.join(BACKUP_DIR, f"dados_backup_{datetime.now().strftime('%Y%m%d')}.json")
         with open(backup_file, "w") as f:
             json.dump(dados, f, indent=2, ensure_ascii=False)
 
+        # Backup com timestamp
         timestamp_backup = os.path.join(BACKUP_DIR, f"dados_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
         with open(timestamp_backup, "w") as f:
             json.dump(dados, f, indent=2, ensure_ascii=False)
@@ -230,69 +122,6 @@ def criar_backup_automatico():
         print(f"✅ Backup automático criado em: {backup_file}")
     except Exception as e:
         print(f"⚠️ Falha ao criar backup automático: {e}")
-        traceback.print_exc()
-
-async def carregar_dados():
-    """Carrega todos os dados do PostgreSQL"""
-    try:
-        conn = await get_async_db_connection()
-
-        partidas = []
-        rows = await conn.fetch("SELECT * FROM partidas ORDER BY data")
-        for row in rows:
-            jogadores = await conn.fetch(
-                "SELECT jogador_id, posicao FROM jogadores_partida WHERE partida_id = $1 ORDER BY posicao",
-                row['id']
-            )
-            partidas.append({
-                "jogo": row['jogo'],
-                "duracao": row['duracao'],
-                "data": row['data'].isoformat(),
-                "jogadores": [str(j['jogador_id']) for j in jogadores]
-            })
-
-        pontuacao = {}
-        rows = await conn.fetch("SELECT * FROM pontuacao_acumulada")
-        for row in rows:
-            pontuacao[str(row['jogador_id'])] = row['pontos']
-
-        await conn.close()
-
-        return {
-            "partidas": partidas,
-            "pontuacao": pontuacao
-        }
-    except Exception as e:
-        print(f"❌ Erro ao carregar dados do PostgreSQL: {e}")
-        traceback.print_exc()
-        return {"partidas": [], "pontuacao": {}}
-
-async def salvar_partida(partida):
-    """Salva uma nova partida no PostgreSQL"""
-    conn = None
-    try:
-        conn = await get_async_db_connection()
-
-        # Verifica se a tabela existe
-        table_exists = await conn.fetchval(
-            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'partidas')"
-        )
-
-        if not table_exists:
-            await init_db()  # Tenta criar as tabelas novamente
-
-        # Restante do código para salvar a partida...
-
-    except Exception as e:
-        print(f"❌ Erro ao salvar partida: {e}")
-        traceback.print_exc()
-        return False
-    finally:
-        if conn is not None:
-            await conn.close()
-
-# Executa durante a importação
-init_persistence()
 
 # ======================
 # FUNÇÕES AUXILIARES
@@ -322,67 +151,60 @@ def obter_jogos_unicos(dados):
     partidas = dados.get("partidas", [])
     return sorted({p["jogo"].lower() for p in partidas})
 
-async def criar_embed_ranking(periodo=None, jogo=None):
-    """Gera ranking diretamente do PostgreSQL"""
-    try:
-        conn = await get_async_db_connection()
+async def criar_embed_ranking(partidas, titulo):
+    estatisticas = {}
 
-        where_clause = "WHERE TRUE"
-        params = []
+    for partida in partidas:
+        total_jogadores = len(partida["jogadores"])
+        for pos, jogador_id in enumerate(partida["jogadores"]):
+            pontos = calcular_pontos(pos, total_jogadores)
 
-        if periodo == "semana":
-            where_clause += " AND p.data >= NOW() - INTERVAL '1 week'"
-        elif periodo == "mes":
-            where_clause += " AND p.data >= NOW() - INTERVAL '1 month'"
-        elif periodo == "ano":
-            where_clause += " AND p.data >= NOW() - INTERVAL '1 year'"
+            if jogador_id not in estatisticas:
+                estatisticas[jogador_id] = {
+                    "pontos": 0,
+                    "partidas": 0,
+                    "vitorias": 0,
+                    "fracassos": 0
+                }
 
-        if jogo:
-            where_clause += " AND p.jogo ILIKE $1"
-            params.append(jogo)
+            estatisticas[jogador_id]["pontos"] += pontos
+            estatisticas[jogador_id]["partidas"] += 1
 
-        query = f"""
-        SELECT 
-            jp.jogador_id,
-            SUM(jp.pontos) as total_pontos,
-            COUNT(DISTINCT jp.partida_id) as total_partidas,
-            SUM(CASE WHEN jp.posicao = 0 THEN 1 ELSE 0 END) as vitorias,
-            SUM(CASE WHEN jp.posicao = (SELECT COUNT(*) - 1 FROM jogadores_partida WHERE partida_id = jp.partida_id) THEN 1 ELSE 0 END) as fracassos
-        FROM jogadores_partida jp
-        JOIN partidas p ON jp.partida_id = p.id
-        {where_clause}
-        GROUP BY jp.jogador_id
-        ORDER BY total_pontos DESC
-        LIMIT 10
-        """
+            if pos == 0:
+                estatisticas[jogador_id]["vitorias"] += 1
+            if pos == total_jogadores - 1:
+                estatisticas[jogador_id]["fracassos"] += 1
 
-        ranking = await conn.fetch(query, *params)
+    ranking = []
+    for jogador_id, stats in estatisticas.items():
+        try:
+            jogador = await bot.get_guild(GUILD_ID).fetch_member(int(jogador_id))
+            media = stats["pontos"] / stats["partidas"] if stats["partidas"] > 0 else 0
+            ranking.append({
+                "nome": jogador.display_name,
+                "pontos": stats["pontos"],
+                "partidas": stats["partidas"],
+                "media": round(media, 2),
+                "vitorias": stats["vitorias"],
+                "fracassos": stats["fracassos"]
+            })
+        except:
+            continue
 
-        mensagem = f"**🏆 Ranking {'Geral' if not periodo else periodo.capitalize()}"
-        mensagem += f" - {jogo.capitalize()}**\n\n" if jogo else "**\n\n"
+    ranking.sort(key=lambda x: x["pontos"], reverse=True)
 
-        for pos, row in enumerate(ranking, start=1):
-            try:
-                jogador = await bot.get_guild(GUILD_ID).fetch_member(row['jogador_id'])
-                emoji = POSICOES[pos-1] if pos <= len(POSICOES) else f"{pos}️⃣"
-                media = row['total_pontos'] / row['total_partidas'] if row['total_partidas'] > 0 else 0
+    mensagem = f"**🏆 {titulo.upper()}**\n\n"
+    for pos, jogador in enumerate(ranking[:10], start=1):
+        emoji = POSICOES[pos-1] if pos <= len(POSICOES) else f"{pos}️⃣"
+        mensagem += (
+            f"**{emoji} {jogador['nome']} | Total: {jogador['pontos']} pts**\n"
+            f"📊 Partidas: {jogador['partidas']}\n"
+            f"📈 Média: {jogador['media']} pts/partida\n"
+            f"🥇 Vitórias: {jogador['vitorias']}\n"
+            f"💀 Fracassos: {jogador['fracassos']}\n\n"
+        )
 
-                mensagem += (
-                    f"**{emoji} {jogador.display_name} | Total: {row['total_pontos']} pts**\n"
-                    f"📊 Partidas: {row['total_partidas']}\n"
-                    f"📈 Média: {round(media, 2)} pts/partida\n"
-                    f"🥇 Vitórias: {row['vitorias']}\n"
-                    f"💀 Fracassos: {row['fracassos']}\n\n"
-                )
-            except:
-                continue
-
-        await conn.close()
-        return mensagem.strip()
-    except Exception as e:
-        print(f"❌ Erro ao gerar ranking: {e}")
-        traceback.print_exc()
-        return "❌ Erro ao gerar ranking"
+    return mensagem.strip()
 
 # ======================
 # COMANDOS DE GERENCIAMENTO DE DADOS
@@ -391,36 +213,20 @@ async def criar_embed_ranking(periodo=None, jogo=None):
 @app_commands.default_permissions(administrator=True)
 async def download_data(interaction: discord.Interaction):
     try:
-        if not os.path.exists(DATA_DIR):
-            os.makedirs(DATA_DIR)
-
-        dados = carregar_dados()
-
-        if not os.path.exists(DADOS_FILE):
-            with open(DADOS_FILE, "w") as f:
-                json.dump(dados, f, indent=2)
-
-        if os.path.getsize(DADOS_FILE) == 0:
-            await interaction.response.send_message(
+        if not os.path.exists(DADOS_FILE) or os.path.getsize(DADOS_FILE) == 0:
+            return await interaction.response.send_message(
                 "⚠️ O arquivo de dados está vazio!",
                 ephemeral=True
             )
-            return
 
         await interaction.response.send_message(
             content="📤 Aqui está o arquivo de dados atual:",
             file=discord.File(DADOS_FILE),
             ephemeral=True
         )
-
-        print(f"✅ Arquivo de dados enviado para {interaction.user.name}")
-
     except Exception as e:
-        error_msg = f"❌ Erro ao preparar arquivo para download: {str(e)}"
-        print(error_msg)
-        traceback.print_exc()
         await interaction.response.send_message(
-            error_msg,
+            f"❌ Erro ao preparar arquivo para download: {str(e)}",
             ephemeral=True
         )
 
@@ -485,6 +291,9 @@ async def registrar_partida(interaction: discord.Interaction, jogo: str, duracao
         )
 
     try:
+        dados = carregar_dados()
+
+        # Cria a nova partida
         nova_partida = {
             "jogo": jogo,
             "duracao": duracao,
@@ -492,20 +301,25 @@ async def registrar_partida(interaction: discord.Interaction, jogo: str, duracao
             "jogadores": [str(j.id) for j in jogadores]
         }
 
-        success = await salvar_partida(nova_partida)
+        # Adiciona à lista de partidas
+        dados["partidas"].append(nova_partida)
 
-        if not success:
-            return await interaction.response.send_message(
-                "❌ Erro ao registrar partida no banco de dados!",
-                ephemeral=True
-            )
+        # Atualiza pontuação acumulada
+        total_jogadores = len(jogadores)
+        for pos, jogador in enumerate(jogadores):
+            pontos = calcular_pontos(pos, total_jogadores)
+            jogador_id = str(jogador.id)
+            dados["pontuacao"][jogador_id] = dados["pontuacao"].get(jogador_id, 0) + pontos
 
+        salvar_dados(dados)
+
+        # Monta mensagem de resultado
         resultado = f"🎮 {jogo} | ⏱️ {duracao}\n\n"
         for idx, jogador in enumerate(jogadores):
             pontos = calcular_pontos(idx, len(jogadores))
             resultado += f"{POSICOES[idx]} {jogador.display_name} | {pontos:+} ponto{'s' if pontos != 1 else ''}\n"
 
-        dados = await carregar_dados()
+        # Adiciona pontuação acumulada
         resultado += "\n📊 Pontuação Acumulada:\n"
         for jogador in jogadores:
             jogador_id = str(jogador.id)
@@ -543,11 +357,13 @@ async def listar_jogos(interaction: discord.Interaction):
 @app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
 async def rank_geral(interaction: discord.Interaction, jogo: str = None):
     try:
-        await interaction.response.defer()
-        mensagem = await criar_embed_ranking(None, jogo)
-        await interaction.followup.send(mensagem)
+        dados = carregar_dados()
+        partidas = filtrar_partidas_por_periodo_e_jogo(dados, None, jogo)
+        titulo = "Ranking Geral" + (f" - {jogo.capitalize()}" if jogo else "")
+        mensagem = await criar_embed_ranking(partidas, titulo)
+        await interaction.response.send_message(mensagem)
     except Exception as e:
-        await interaction.followup.send(
+        await interaction.response.send_message(
             f"❌ Erro ao gerar ranking: {str(e)}",
             ephemeral=True
         )
@@ -556,11 +372,13 @@ async def rank_geral(interaction: discord.Interaction, jogo: str = None):
 @app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
 async def rank_semanal(interaction: discord.Interaction, jogo: str = None):
     try:
-        await interaction.response.defer()
-        mensagem = await criar_embed_ranking("semana", jogo)
-        await interaction.followup.send(mensagem)
+        dados = carregar_dados()
+        partidas = filtrar_partidas_por_periodo_e_jogo(dados, "semana", jogo)
+        titulo = "Ranking Semanal" + (f" - {jogo.capitalize()}" if jogo else "")
+        mensagem = await criar_embed_ranking(partidas, titulo)
+        await interaction.response.send_message(mensagem)
     except Exception as e:
-        await interaction.followup.send(
+        await interaction.response.send_message(
             f"❌ Erro ao gerar ranking semanal: {str(e)}",
             ephemeral=True
         )
@@ -569,11 +387,13 @@ async def rank_semanal(interaction: discord.Interaction, jogo: str = None):
 @app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
 async def rank_mensal(interaction: discord.Interaction, jogo: str = None):
     try:
-        await interaction.response.defer()
-        mensagem = await criar_embed_ranking("mes", jogo)
-        await interaction.followup.send(mensagem)
+        dados = carregar_dados()
+        partidas = filtrar_partidas_por_periodo_e_jogo(dados, "mes", jogo)
+        titulo = "Ranking Mensal" + (f" - {jogo.capitalize()}" if jogo else "")
+        mensagem = await criar_embed_ranking(partidas, titulo)
+        await interaction.response.send_message(mensagem)
     except Exception as e:
-        await interaction.followup.send(
+        await interaction.response.send_message(
             f"❌ Erro ao gerar ranking mensal: {str(e)}",
             ephemeral=True
         )
@@ -582,11 +402,13 @@ async def rank_mensal(interaction: discord.Interaction, jogo: str = None):
 @app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
 async def rank_anual(interaction: discord.Interaction, jogo: str = None):
     try:
-        await interaction.response.defer()
-        mensagem = await criar_embed_ranking("ano", jogo)
-        await interaction.followup.send(mensagem)
+        dados = carregar_dados()
+        partidas = filtrar_partidas_por_periodo_e_jogo(dados, "ano", jogo)
+        titulo = "Ranking Anual" + (f" - {jogo.capitalize()}" if jogo else "")
+        mensagem = await criar_embed_ranking(partidas, titulo)
+        await interaction.response.send_message(mensagem)
     except Exception as e:
-        await interaction.followup.send(
+        await interaction.response.send_message(
             f"❌ Erro ao gerar ranking anual: {str(e)}",
             ephemeral=True
         )
@@ -594,27 +416,29 @@ async def rank_anual(interaction: discord.Interaction, jogo: str = None):
 @bot.tree.command(name="rank_all", description="Mostra o ranking de todos os jogos")
 async def rank_all(interaction: discord.Interaction):
     try:
-        await interaction.response.defer()
-
-        conn = await get_async_db_connection()
-        jogos = await conn.fetch("SELECT DISTINCT jogo FROM partidas ORDER BY jogo")
-        await conn.close()
+        dados = carregar_dados()
+        jogos = obter_jogos_unicos(dados)
 
         if not jogos:
-            return await interaction.followup.send("❌ Nenhuma partida registrada ainda!")
+            return await interaction.response.send_message("❌ Nenhuma partida registrada ainda!")
+
+        await interaction.response.defer()
 
         mensagem_final = ""
-        for jogo_record in jogos:
-            jogo = jogo_record['jogo']
-            mensagem = await criar_embed_ranking(None, jogo)
-            mensagem_final += f"{mensagem}\n\n"
+        for jogo in jogos:
+            partidas = filtrar_partidas_por_periodo_e_jogo(dados, None, jogo)
+            if partidas:
+                ranking = await criar_embed_ranking(partidas, f"Ranking - {jogo.capitalize()}")
+                mensagem_final += f"{ranking}\n\n"
+
+        if not mensagem_final:
+            return await interaction.followup.send("❌ Nenhum ranking disponível!")
 
         partes = [mensagem_final[i:i+2000] for i in range(0, len(mensagem_final), 2000)]
         for parte in partes:
             await interaction.followup.send(parte)
-
     except Exception as e:
-        await interaction.followup.send(
+        await interaction.response.send_message(
             f"❌ Erro ao gerar rankings: {str(e)}",
             ephemeral=True
         )
@@ -623,66 +447,84 @@ async def rank_all(interaction: discord.Interaction):
 @app_commands.describe(jogador="Jogador para ver as estatísticas")
 async def rank_jogador(interaction: discord.Interaction, jogador: discord.Member):
     try:
-        await interaction.response.defer()
+        dados = carregar_dados()
+        jogador_id = str(jogador.id)
 
-        conn = await get_async_db_connection()
+        estatisticas = {
+            "pontos": 0,
+            "partidas": 0,
+            "vitorias": 0,
+            "fracassos": 0,
+            "por_jogo": {}
+        }
 
-        stats = await conn.fetchrow("""
-            SELECT pontos, partidas, vitorias, fracassos 
-            FROM pontuacao_acumulada 
-            WHERE jogador_id = $1
-        """, jogador.id)
+        for partida in dados["partidas"]:
+            if jogador_id in partida["jogadores"]:
+                pos = partida["jogadores"].index(jogador_id)
+                total_jogadores = len(partida["jogadores"])
+                pontos = calcular_pontos(pos, total_jogadores)
 
-        if not stats:
-            return await interaction.followup.send(
-                f"ℹ️ {jogador.display_name} não possui partidas registradas!"
+                estatisticas["pontos"] += pontos
+                estatisticas["partidas"] += 1
+
+                if pos == 0:
+                    estatisticas["vitorias"] += 1
+                if pos == total_jogadores - 1:
+                    estatisticas["fracassos"] += 1
+
+                # Estatísticas por jogo
+                jogo = partida["jogo"].lower()
+                if jogo not in estatisticas["por_jogo"]:
+                    estatisticas["por_jogo"][jogo] = {
+                        "pontos": 0,
+                        "partidas": 0,
+                        "vitorias": 0,
+                        "fracassos": 0
+                    }
+
+                estatisticas["por_jogo"][jogo]["pontos"] += pontos
+                estatisticas["por_jogo"][jogo]["partidas"] += 1
+                if pos == 0:
+                    estatisticas["por_jogo"][jogo]["vitorias"] += 1
+                if pos == total_jogadores - 1:
+                    estatisticas["por_jogo"][jogo]["fracassos"] += 1
+
+        if estatisticas["partidas"] == 0:
+            return await interaction.response.send_message(
+                f"ℹ️ {jogador.display_name} não possui partidas registradas!",
+                ephemeral=True
             )
 
-        jogos = await conn.fetch("""
-            SELECT 
-                p.jogo,
-                COUNT(*) as partidas,
-                SUM(jp.pontos) as pontos,
-                SUM(CASE WHEN jp.posicao = 0 THEN 1 ELSE 0 END) as vitorias,
-                SUM(CASE WHEN jp.posicao = (SELECT COUNT(*) - 1 FROM jogadores_partida WHERE partida_id = p.id) THEN 1 ELSE 0 END) as fracassos
-            FROM jogadores_partida jp
-            JOIN partidas p ON jp.partida_id = p.id
-            WHERE jp.jogador_id = $1
-            GROUP BY p.jogo
-            ORDER BY pontos DESC
-        """, jogador.id)
-
-        await conn.close()
+        media = estatisticas["pontos"] / estatisticas["partidas"]
 
         mensagem = (
             f"**📊 Estatísticas de {jogador.display_name}**\n\n"
-            f"🏆 **Pontuação Total:** {stats['pontos']}\n"
-            f"🎮 **Partidas Jogadas:** {stats['partidas']}\n"
-            f"🥇 **Vitórias:** {stats['vitorias']}\n"
-            f"💀 **Fracassos:** {stats['fracassos']}\n"
-            f"📈 **Média de Pontos/Partida:** {round(stats['pontos']/stats['partidas'], 2)}\n\n"
+            f"🏆 **Pontuação Total:** {estatisticas['pontos']}\n"
+            f"🎮 **Partidas Jogadas:** {estatisticas['partidas']}\n"
+            f"🥇 **Vitórias:** {estatisticas['vitorias']}\n"
+            f"💀 **Fracassos:** {estatisticas['fracassos']}\n"
+            f"📈 **Média de Pontos/Partida:** {round(media, 2)}\n\n"
             f"**🎲 Desempenho por Jogo:**\n"
         )
 
-        for jogo in jogos:
+        for jogo, stats in estatisticas["por_jogo"].items():
             mensagem += (
-                f"\n**{jogo['jogo'].capitalize()}:** "
-                f"{jogo['pontos']} pts | "
-                f"{jogo['partidas']} partidas | "
-                f"{jogo['vitorias']}🥇 | "
-                f"{jogo['fracassos']}💀"
+                f"\n**{jogo.capitalize()}:** "
+                f"{stats['pontos']} pts | "
+                f"{stats['partidas']} partidas | "
+                f"{stats['vitorias']}🥇 | "
+                f"{stats['fracassos']}💀"
             )
 
-        await interaction.followup.send(mensagem)
-
+        await interaction.response.send_message(mensagem)
     except Exception as e:
-        await interaction.followup.send(
+        await interaction.response.send_message(
             f"❌ Erro ao gerar estatísticas do jogador: {str(e)}",
             ephemeral=True
         )
 
 # ======================
-# COMANDOS DE BACKUP E MANUTENÇÃO
+# COMANDOS DE BACKUP
 # ======================
 @bot.tree.command(name="backup", description="🔵 Cria um backup dos dados (apenas admin)")
 @app_commands.default_permissions(administrator=True)
@@ -699,87 +541,6 @@ async def criar_backup(interaction: discord.Interaction):
             ephemeral=True
         )
 
-@bot.tree.command(name="backup_db", description="🔵 Cria backup do banco de dados (apenas admin)")
-@app_commands.default_permissions(administrator=True)
-async def backup_database(interaction: discord.Interaction):
-    try:
-        await interaction.response.defer(ephemeral=True)
-
-        backup_file = os.path.join(BACKUP_DIR, f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.sql")
-
-        db_url = os.getenv('DATABASE_URL')
-        result = urlparse(db_url)
-
-        cmd = (
-            f"pg_dump --dbname=postgresql://{result.username}:{result.password}@"
-            f"{result.hostname}:{result.port}/{result.path[1:]} > {backup_file}"
-        )
-
-        os.system(cmd)
-
-        if os.path.exists(backup_file) and os.path.getsize(backup_file) > 0:
-            await interaction.followup.send(
-                "✅ Backup criado com sucesso!",
-                file=discord.File(backup_file),
-                ephemeral=True
-            )
-        else:
-            await interaction.followup.send(
-                "❌ Falha ao criar backup!",
-                ephemeral=True
-            )
-    except Exception as e:
-        await interaction.followup.send(
-            f"❌ Erro ao criar backup: {str(e)}",
-            ephemeral=True
-        )
-        traceback.print_exc()
-
-@bot.tree.command(name="download_backup", description="🔵 Baixa o arquivo de dados (apenas admin)")
-@app_commands.default_permissions(administrator=True)
-async def download_backup(interaction: discord.Interaction):
-    try:
-        if not os.path.exists(DADOS_FILE) or os.path.getsize(DADOS_FILE) == 0:
-            return await interaction.response.send_message(
-                "❌ Nenhum dado disponível para download",
-                ephemeral=True
-            )
-
-        await interaction.response.send_message(
-            "📤 Aqui está o arquivo de dados atual:",
-            file=discord.File(DADOS_FILE),
-            ephemeral=True
-        )
-    except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Erro ao preparar arquivo para download: {str(e)}",
-            ephemeral=True
-        )
-
-@bot.tree.command(name="debug_persistencia", description="Mostra informações do sistema de arquivos")
-async def debug(interaction: discord.Interaction):
-    try:
-        backups = [f for f in os.listdir(BACKUP_DIR) if f.startswith("dados_backup_")]
-        backups.sort(reverse=True)
-
-        info = (
-            f"🔧 **Debug - Sistema de Arquivos**\n"
-            f"Modo Persistente: `{PERSISTENT_MODE}`\n"
-            f"Localização dos dados: `{os.path.abspath(DADOS_FILE)}`\n"
-            f"Arquivo existe: `{os.path.exists(DADOS_FILE)}`\n"
-            f"Tamanho: `{os.path.getsize(DADOS_FILE) if os.path.exists(DADOS_FILE) else 0} bytes`\n"
-            f"Última modificação: `{datetime.fromtimestamp(os.path.getmtime(DADOS_FILE)) if os.path.exists(DADOS_FILE) else 'N/A'}`\n"
-            f"\n**Backups disponíveis:**\n"
-            f"Total: {len(backups)}\n"
-            f"Mais recente: `{backups[0] if backups else 'Nenhum'}`"
-        )
-        await interaction.response.send_message(info, ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Erro ao coletar informações: {str(e)}",
-            ephemeral=True
-        )
-
 @bot.tree.command(name="reset_data", description="🔴 RESETA todos os dados (apenas admin)")
 @app_commands.default_permissions(administrator=True)
 async def reset_data(interaction: discord.Interaction, confirmacao: str):
@@ -792,50 +553,17 @@ async def reset_data(interaction: discord.Interaction, confirmacao: str):
     try:
         criar_backup_automatico()
         with open(DADOS_FILE, "w") as f:
-            json.dump([], f)
+            json.dump({"partidas": [], "pontuacao": {}}, f)
 
         await interaction.response.send_message(
             "✅ Banco de dados resetado com sucesso! Todos os registros foram apagados.",
             ephemeral=True
         )
-        print(f"⚠️ Dados resetados por {interaction.user.name}")
     except Exception as e:
         await interaction.response.send_message(
             f"❌ Erro ao resetar: {str(e)}",
             ephemeral=True
         )
-
-@bot.tree.command(name="migrate_db", description="🟠 Migra dados do JSON para PostgreSQL (apenas admin)")
-@app_commands.default_permissions(administrator=True)
-async def migrate_database(interaction: discord.Interaction):
-    try:
-        await interaction.response.defer(ephemeral=True)
-
-        dados = carregar_dados()
-        total = len(dados.get("partidas", []))
-
-        if total == 0:
-            return await interaction.followup.send(
-                "ℹ️ Nenhum dado para migrar!",
-                ephemeral=True
-            )
-
-        migradas = 0
-        for partida in dados["partidas"]:
-            success = await salvar_partida(partida)
-            if success:
-                migradas += 1
-
-        await interaction.followup.send(
-            f"✅ Migração concluída! {migradas}/{total} partidas migradas",
-            ephemeral=True
-        )
-    except Exception as e:
-        await interaction.followup.send(
-            f"❌ Erro durante migração: {str(e)}",
-            ephemeral=True
-        )
-        traceback.print_exc()
 
 # ======================
 # SISTEMA AUTOMÁTICO
@@ -853,17 +581,26 @@ async def enviar_rankings_automaticos():
         try:
             # Domingo às 23:59 - Ranking Semanal
             if now.weekday() == 6 and now.hour == 23 and now.minute == 59:
-                await enviar_ranking_automatico("semana", "Ranking Semanal", canal)
+                dados = carregar_dados()
+                partidas = filtrar_partidas_por_periodo_e_jogo(dados, "semana")
+                mensagem = await criar_embed_ranking(partidas, "Ranking Semanal")
+                await canal.send(mensagem)
                 criar_backup_automatico()
 
             # Último dia do mês às 23:59 - Ranking Mensal
             if (now + timedelta(days=1)).month != now.month and now.hour == 23 and now.minute == 59:
-                await enviar_ranking_automatico("mes", "Ranking Mensal", canal)
+                dados = carregar_dados()
+                partidas = filtrar_partidas_por_periodo_e_jogo(dados, "mes")
+                mensagem = await criar_embed_ranking(partidas, "Ranking Mensal")
+                await canal.send(mensagem)
                 criar_backup_automatico()
 
             # 31/12 às 23:59 - Ranking Anual
             if now.month == 12 and now.day == 31 and now.hour == 23 and now.minute == 59:
-                await enviar_ranking_automatico("ano", "Ranking Anual", canal)
+                dados = carregar_dados()
+                partidas = filtrar_partidas_por_periodo_e_jogo(dados, "ano")
+                mensagem = await criar_embed_ranking(partidas, "Ranking Anual")
+                await canal.send(mensagem)
                 criar_backup_automatico()
 
             await asyncio.sleep(60)
@@ -871,49 +608,29 @@ async def enviar_rankings_automaticos():
             print(f"⚠️ Erro no sistema automático: {e}")
             await asyncio.sleep(60)
 
-async def enviar_ranking_automatico(periodo, titulo, canal):
-    try:
-        dados = carregar_dados()
-        jogos = obter_jogos_unicos(dados)
-
-        if not jogos:
-            return
-
-        for jogo in jogos:
-            partidas = filtrar_partidas_por_periodo_e_jogo(dados, periodo, jogo)
-            if partidas:
-                mensagem = await criar_embed_ranking(partidas, f"{titulo} - {jogo.capitalize()}")
-                await canal.send(mensagem)
-    except Exception as e:
-        print(f"⚠️ Erro ao enviar ranking automático: {e}")
-
 # ======================
 # EVENTOS DO BOT
 # ======================
 @bot.event
 async def on_ready():
-    try:
-        print("⏳ Inicializando banco de dados...")
-        await init_db()  # Garante que as tabelas existam
+    init_persistence()  # Garante que os diretórios e arquivos existam
 
-        print("⏳ Sincronizando comandos slash...")
+    print(f"✅ Bot conectado como {bot.user.name}")
+    print(f"📁 Local dos dados: {os.path.abspath(DADOS_FILE)}")
+
+    try:
         synced = await bot.tree.sync()
         print(f"✅ {len(synced)} comandos sincronizados")
-
-        print(f"✅ Bot conectado como {bot.user.name}")
-        await bot.change_presence(activity=discord.Activity(
-            type=discord.ActivityType.watching,
-            name="/game e /rank"
-        ))
-
-        # Inicia tarefas automáticas
-        bot.loop.create_task(enviar_rankings_automaticos())
-        print("✅ Tarefas automáticas iniciadas")
     except Exception as e:
-        print(f"❌ Erro crítico na inicialização: {e}")
-        traceback.print_exc()
-        # Você pode querer encerrar o bot se a inicialização falhar
-        await bot.close()
+        print(f"⚠️ Erro ao sincronizar comandos: {e}")
+
+    await bot.change_presence(activity=discord.Activity(
+        type=discord.ActivityType.watching,
+        name="/game e /rank"
+    ))
+
+    bot.loop.create_task(enviar_rankings_automaticos())
+    print("✅ Tarefas automáticas iniciadas")
 
 # ======================
 # INICIALIZAÇÃO
@@ -938,5 +655,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Erro fatal: {e}")
         traceback.print_exc()
-        # Garante um backup final antes de sair
         criar_backup_automatico()
