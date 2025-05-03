@@ -230,6 +230,41 @@ async def download_data(interaction: discord.Interaction):
             ephemeral=True
         )
 
+@bot.tree.command(name="upload_data", description="📤 Envia um novo arquivo de dados (substitui o atual)")
+@app_commands.default_permissions(administrator=True)
+async def upload_data(interaction: discord.Interaction, arquivo: discord.Attachment):
+    # Verifica se é um arquivo JSON
+    if not arquivo.filename.endswith('.json'):
+        return await interaction.response.send_message("❌ O arquivo deve ser .json!", ephemeral=True)
+
+    try:
+        # Baixa o arquivo temporariamente
+        await arquivo.save(f"temp_{DADOS_FILE}")
+
+        # Valida o conteúdo JSON
+        with open(f"temp_{DADOS_FILE}", 'r') as f:
+            json.load(f)  # Testa se é JSON válido
+
+        # Substitui o arquivo original
+        shutil.move(f"temp_{DADOS_FILE}", DADOS_FILE)
+
+        await interaction.response.send_message(
+            "✅ Arquivo de dados atualizado com sucesso!",
+            ephemeral=True
+        )
+    except json.JSONDecodeError:
+        await interaction.response.send_message(
+            "❌ Arquivo JSON inválido!",
+            ephemeral=True
+        )
+    except Exception as e:
+        await interaction.response.send_message(
+            f"❌ Erro ao atualizar: {str(e)}",
+            ephemeral=True
+        )
+        if os.path.exists(f"temp_{DADOS_FILE}"):
+            os.remove(f"temp_{DADOS_FILE}")
+
 @bot.tree.command(name="view_data", description="👁️ Mostra os dados atuais (apenas admin)")
 @app_commands.default_permissions(administrator=True)
 async def view_data(interaction: discord.Interaction):
