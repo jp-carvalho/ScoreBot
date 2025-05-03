@@ -10,6 +10,11 @@ from threading import Lock
 from datetime import datetime, timedelta
 from discord.ext import commands
 from discord import app_commands
+import psycopg2
+from psycopg2 import sql
+from psycopg2.extras import DictCursor
+from urllib.parse import urlparse
+import asyncpg  # Para operações assíncronas
 
 # ======================
 # CONFIGURAÇÕES GLOBAIS
@@ -28,8 +33,78 @@ POSICOES = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", 
 CANAL_RANKING_ID = 1360294622768926901
 MINIMO_JOGADORES = 2
 
+
+
 # Lock para operações de arquivo
 file_lock = Lock()
+
+def get_db_connection():
+    """Estabelece conexão com o PostgreSQL"""
+    db_url = os.getenv('DATABASE_URL')
+    result = urlparse(db_url)
+
+    conn = psycopg2.connect(
+        database=result.path[1:],
+        user=result.username,
+        password=result.password,
+        host=result.hostname,
+        port=result.port
+    )
+    return conn
+
+async def get_async_db_connection():
+    """Conexão assíncrona para operações do bot"""
+    db_url = os.getenv('DATABASE_URL')
+    return await asyncpg.connect(db_url)
+
+async def init_db():
+    """Cria as tabelas necessárias no PostgreSQL"""
+    commands = (
+        """
+        CREATE TABLE IF NOT EXISTS partidas (
+            id SERIAL PRIMARY KEY,
+            jogo VARCHAR(255) NOT NULL,
+            duracao VARCHAR(50) NOT NULL,
+            data TIMESTAMP NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS jogadores_partida (
+            partida_id INTEGER REFERENCES partidas(id),
+            jogador_id BIGINT NOT NULL,
+            posicao INTEGER NOT NULL,
+            pontos INTEGER NOT NULL,
+            PRIMARY KEY (partida_id, jogador_id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS pontuacao_acumulada (
+            jogador_id BIGINT PRIMARY KEY,
+            pontos INTEGER NOT NULL DEFAULT 0,
+            partidas INTEGER NOT NULL DEFAULT 0,
+            vitorias INTEGER NOT NULL DEFAULT 0,
+            fracassos INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        for command in commands:
+            cur.execute(command)
+
+        cur.close()
+        conn.commit()
+        print("✅ Tabelas criadas com sucesso no PostgreSQL")
+    except Exception as e:
+        print(f"❌ Erro ao criar tabelas: {e}")
+        traceback.print_exc()
+    finally:
+        if conn is not None:
+            conn.close()
 
 # ======================
 # INICIALIZAÇÃO DO BOT
@@ -157,88 +232,89 @@ def criar_backup_automatico():
         print(f"⚠️ Falha ao criar backup automático: {e}")
         traceback.print_exc()
 
-def carregar_dados():
-    """Carrega os dados com tratamento robusto de erros"""
-    # Primeiro tenta carregar da variável de ambiente
-    if USE_ENV_STORAGE:
-        env_data = get_env_storage()
-        if env_data is not None:
-            return env_data
+        async def carregar_dados():
+            """Carrega todos os dados do PostgreSQL"""
+            try:
+                conn = await get_async_db_connection()
 
-    # Fallback para arquivo local
-    if not os.path.exists(DADOS_FILE):
-        return {"partidas": [], "pontuacao": {}}
+                # Carrega partidas
+                partidas = []
+                rows = await conn.fetch("SELECT * FROM partidas ORDER BY data")
+                for row in rows:
+                    # Carrega jogadores para cada partida
+                    jogadores = await conn.fetch(
+                        "SELECT jogador_id, posicao FROM jogadores_partida WHERE partida_id = $1 ORDER BY posicao",
+                        row['id']
+                    )
+                    partidas.append({
+                        "jogo": row['jogo'],
+                        "duracao": row['duracao'],
+                        "data": row['data'].isoformat(),
+                        "jogadores": [str(j['jogador_id']) for j in jogadores]
+                    })
 
-    try:
-        with file_lock:
-            if os.path.getsize(DADOS_FILE) == 0:
+                # Carrega pontuação acumulada
+                pontuacao = {}
+                rows = await conn.fetch("SELECT * FROM pontuacao_acumulada")
+                for row in rows:
+                    pontuacao[str(row['jogador_id'])] = row['pontos']
+
+                await conn.close()
+
+                return {
+                    "partidas": partidas,
+                    "pontuacao": pontuacao
+                }
+            except Exception as e:
+                print(f"❌ Erro ao carregar dados do PostgreSQL: {e}")
+                traceback.print_exc()
                 return {"partidas": [], "pontuacao": {}}
 
-            with open(DADOS_FILE, "r", encoding="utf-8") as f:
-                dados = json.load(f)
-
-                # Migração para nova estrutura se necessário
-                if not isinstance(dados, dict):
-                    dados = {
-                        "partidas": dados,
-                        "pontuacao": {}
-                    }
-                    # Calcula pontuação acumulada inicial
-                    for partida in dados["partidas"]:
-                        total_jogadores = len(partida["jogadores"])
-                        for pos, jogador_id in enumerate(partida["jogadores"]):
-                            pontos = calcular_pontos(pos, total_jogadores)
-                            dados["pontuacao"][jogador_id] = dados["pontuacao"].get(jogador_id, 0) + pontos
-                    salvar_dados(dados)
-
-                return dados
-    except json.JSONDecodeError as e:
-        print(f"⚠️ Erro ao decodificar JSON (arquivo pode estar corrompido): {e}")
-        corrupt_file = backup_corrupt_file()
-        if corrupt_file:
-            print(f"⚠️ Arquivo corrompido salvo em: {corrupt_file}")
-        return {"partidas": [], "pontuacao": {}}
-    except Exception as e:
-        print(f"⚠️ Erro inesperado ao carregar dados: {e}")
-        traceback.print_exc()
-        return {"partidas": [], "pontuacao": {}}
-
-def salvar_dados(dados):
-    """Salva os dados com tratamento robusto de erros"""
-    try:
-        # Primeiro salva em um arquivo temporário
-        temp_file = DADOS_FILE + ".tmp"
-
-        with file_lock:
-            with open(temp_file, "w", encoding="utf-8") as f:
-                json.dump(dados, f, indent=2, ensure_ascii=False)
-
-            # Verifica se o arquivo temporário foi criado corretamente
-            if not os.path.exists(temp_file) or os.path.getsize(temp_file) == 0:
-                raise ValueError("Arquivo temporário não foi criado corretamente")
-
-            # Se chegou aqui sem erros, substitui o arquivo original
-            if os.path.exists(DADOS_FILE):
-                os.replace(temp_file, DADOS_FILE)
-            else:
-                shutil.move(temp_file, DADOS_FILE)
-
-        # Atualiza a variável de ambiente também
-        if USE_ENV_STORAGE:
-            update_env_storage(dados)
-
-        print("✅ Dados salvos com sucesso (arquivo + variável de ambiente)")
-    except Exception as e:
-        print(f"⚠️ Erro ao salvar dados: {e}")
-        traceback.print_exc()
-
-        # Remove o arquivo temporário se existir
-        if os.path.exists(temp_file):
+        async def salvar_partida(partida):
+            """Salva uma nova partida no PostgreSQL"""
             try:
-                os.remove(temp_file)
-            except:
-                pass
-        raise
+                conn = await get_async_db_connection()
+
+                # Insere a partida
+                partida_id = await conn.fetchval(
+                    "INSERT INTO partidas (jogo, duracao, data) VALUES ($1, $2, $3) RETURNING id",
+                    partida["jogo"],
+                    partida["duracao"],
+                    datetime.fromisoformat(partida["data"])
+                )
+
+                # Insere os jogadores e atualiza pontuação
+                total_jogadores = len(partida["jogadores"])
+                for pos, jogador_id in enumerate(partida["jogadores"]):
+                    pontos = calcular_pontos(pos, total_jogadores)
+
+                    # Insere na tabela de relação
+                    await conn.execute(
+                        "INSERT INTO jogadores_partida (partida_id, jogador_id, posicao, pontos) VALUES ($1, $2, $3, $4)",
+                        partida_id,
+                        int(jogador_id),
+                        pos,
+                        pontos
+                    )
+
+                    # Atualiza pontuação acumulada
+                    await conn.execute("""
+                        INSERT INTO pontuacao_acumulada (jogador_id, pontos, partidas, vitorias, fracassos)
+                        VALUES ($1, $2, 1, $3, $4)
+                        ON CONFLICT (jogador_id) DO UPDATE
+                        SET 
+                            pontos = pontuacao_acumulada.pontos + EXCLUDED.pontos,
+                            partidas = pontuacao_acumulada.partidas + 1,
+                            vitorias = pontuacao_acumulada.vitorias + EXCLUDED.vitorias,
+                            fracassos = pontuacao_acumulada.fracassos + EXCLUDED.fracassos
+                    """, int(jogador_id), pontos, 1 if pos == 0 else 0, 1 if pos == total_jogadores - 1 else 0)
+
+                await conn.close()
+                return True
+            except Exception as e:
+                print(f"❌ Erro ao salvar partida no PostgreSQL: {e}")
+                traceback.print_exc()
+                return False
 
 # Executa durante a importação
 init_persistence()
@@ -271,60 +347,70 @@ def obter_jogos_unicos(dados):
     partidas = dados.get("partidas", [])
     return sorted({p["jogo"].lower() for p in partidas})
 
-async def criar_embed_ranking(partidas, titulo):
-    estatisticas = {}
-
-    for partida in partidas:
-        total_jogadores = len(partida["jogadores"])
-        for pos, jogador_id in enumerate(partida["jogadores"]):
-            pontos = calcular_pontos(pos, total_jogadores)
-
-            if jogador_id not in estatisticas:
-                estatisticas[jogador_id] = {
-                    "pontos": 0,
-                    "partidas": 0,
-                    "vitorias": 0,
-                    "fracassos": 0
-                }
-
-            estatisticas[jogador_id]["pontos"] += pontos
-            estatisticas[jogador_id]["partidas"] += 1
-
-            if pos == 0:
-                estatisticas[jogador_id]["vitorias"] += 1
-            if pos == total_jogadores - 1:
-                estatisticas[jogador_id]["fracassos"] += 1
-
-    ranking = []
-    for jogador_id, stats in estatisticas.items():
+    async def criar_embed_ranking(periodo=None, jogo=None):
+        """Gera ranking diretamente do PostgreSQL"""
         try:
-            jogador = await bot.get_guild(GUILD_ID).fetch_member(int(jogador_id))
-            media = stats["pontos"] / stats["partidas"] if stats["partidas"] > 0 else 0
-            ranking.append({
-                "nome": jogador.display_name,
-                "pontos": stats["pontos"],
-                "partidas": stats["partidas"],
-                "media": round(media, 2),
-                "vitorias": stats["vitorias"],
-                "fracassos": stats["fracassos"]
-            })
-        except:
-            continue
+            conn = await get_async_db_connection()
 
-    ranking.sort(key=lambda x: x["pontos"], reverse=True)
+            # Filtro de período
+            where_clause = "WHERE TRUE"
+            params = []
 
-    mensagem = f"**🏆 {titulo.upper()}**\n\n"
-    for pos, jogador in enumerate(ranking[:10], start=1):
-        emoji = POSICOES[pos-1] if pos <= len(POSICOES) else f"{pos}️⃣"
-        mensagem += (
-            f"**{emoji} {jogador['nome']} | Total: {jogador['pontos']} pts**\n"
-            f"📊 Partidas: {jogador['partidas']}\n"
-            f"📈 Média: {jogador['media']} pts/partida\n"
-            f"🥇 Vitórias: {jogador['vitorias']}\n"
-            f"💀 Fracassos: {jogador['fracassos']}\n\n"
-        )
+            if periodo == "semana":
+                where_clause += " AND p.data >= NOW() - INTERVAL '1 week'"
+            elif periodo == "mes":
+                where_clause += " AND p.data >= NOW() - INTERVAL '1 month'"
+            elif periodo == "ano":
+                where_clause += " AND p.data >= NOW() - INTERVAL '1 year'"
 
-    return mensagem.strip()
+            if jogo:
+                where_clause += " AND p.jogo ILIKE $1"
+                params.append(jogo)
+
+            # Query para obter estatísticas
+            query = f"""
+            SELECT 
+                jp.jogador_id,
+                SUM(jp.pontos) as total_pontos,
+                COUNT(DISTINCT jp.partida_id) as total_partidas,
+                SUM(CASE WHEN jp.posicao = 0 THEN 1 ELSE 0 END) as vitorias,
+                SUM(CASE WHEN jp.posicao = (SELECT COUNT(*) - 1 FROM jogadores_partida WHERE partida_id = jp.partida_id) THEN 1 ELSE 0 END) as fracassos
+            FROM jogadores_partida jp
+            JOIN partidas p ON jp.partida_id = p.id
+            {where_clause}
+            GROUP BY jp.jogador_id
+            ORDER BY total_pontos DESC
+            LIMIT 10
+            """
+
+            ranking = await conn.fetch(query, *params)
+
+            # Formata a mensagem
+            mensagem = f"**🏆 Ranking {'Geral' if not periodo else periodo.capitalize()}"
+            mensagem += f" - {jogo.capitalize()}**\n\n" if jogo else "**\n\n"
+
+            for pos, row in enumerate(ranking, start=1):
+                try:
+                    jogador = await bot.get_guild(GUILD_ID).fetch_member(row['jogador_id'])
+                    emoji = POSICOES[pos-1] if pos <= len(POSICOES) else f"{pos}️⃣"
+                    media = row['total_pontos'] / row['total_partidas'] if row['total_partidas'] > 0 else 0
+
+                    mensagem += (
+                        f"**{emoji} {jogador.display_name} | Total: {row['total_pontos']} pts**\n"
+                        f"📊 Partidas: {row['total_partidas']}\n"
+                        f"📈 Média: {round(media, 2)} pts/partida\n"
+                        f"🥇 Vitórias: {row['vitorias']}\n"
+                        f"💀 Fracassos: {row['fracassos']}\n\n"
+                    )
+                except:
+                    continue
+
+            await conn.close()
+            return mensagem.strip()
+        except Exception as e:
+            print(f"❌ Erro ao gerar ranking: {e}")
+            traceback.print_exc()
+            return "❌ Erro ao gerar ranking"
 
 # ======================
 # COMANDOS DE GERENCIAMENTO DE DADOS
@@ -407,76 +493,72 @@ async def view_data(interaction: discord.Interaction):
 # ======================
 # COMANDOS DE REGISTRO
 # ======================
-@bot.tree.command(name="game", description="Registra uma partida competitiva")
-@app_commands.describe(
-    jogo="Nome do jogo (ex: Uno, Xadrez)",
-    duracao="Duração (ex: 1h30m)",
-    jogador1="1º lugar (vencedor)",
-    jogador2="2º lugar",
-    jogador3="3º lugar (opcional)",
-    jogador4="4º lugar (opcional)",
-    jogador5="5º lugar (opcional)",
-    jogador6="6º lugar (opcional)",
-    jogador7="7º lugar (opcional)",
-    jogador8="8º lugar (opcional)"
-)
-async def registrar_partida(interaction: discord.Interaction, jogo: str, duracao: str, 
-                          jogador1: discord.Member, jogador2: discord.Member,
-                          jogador3: discord.Member = None, jogador4: discord.Member = None,
-                          jogador5: discord.Member = None, jogador6: discord.Member = None,
-                          jogador7: discord.Member = None, jogador8: discord.Member = None):
-
-    jogadores = [j for j in [jogador1, jogador2, jogador3, jogador4, 
-                            jogador5, jogador6, jogador7, jogador8] if j is not None]
-
-    if len(jogadores) < MINIMO_JOGADORES:
-        return await interaction.response.send_message(
-            f"❌ Mínimo de {MINIMO_JOGADORES} jogadores para registrar!",
-            ephemeral=True
+        @bot.tree.command(name="game", description="Registra uma partida competitiva")
+        @app_commands.describe(
+            jogo="Nome do jogo (ex: Uno, Xadrez)",
+            duracao="Duração (ex: 1h30m)",
+            jogador1="1º lugar (vencedor)",
+            jogador2="2º lugar",
+            jogador3="3º lugar (opcional)",
+            jogador4="4º lugar (opcional)",
+            jogador5="5º lugar (opcional)",
+            jogador6="6º lugar (opcional)",
+            jogador7="7º lugar (opcional)",
+            jogador8="8º lugar (opcional)"
         )
+        async def registrar_partida(interaction: discord.Interaction, jogo: str, duracao: str, 
+                                  jogador1: discord.Member, jogador2: discord.Member,
+                                  jogador3: discord.Member = None, jogador4: discord.Member = None,
+                                  jogador5: discord.Member = None, jogador6: discord.Member = None,
+                                  jogador7: discord.Member = None, jogador8: discord.Member = None):
 
-    try:
-        dados = carregar_dados()
+            jogadores = [j for j in [jogador1, jogador2, jogador3, jogador4, 
+                                    jogador5, jogador6, jogador7, jogador8] if j is not None]
 
-        # Cria a nova partida
-        nova_partida = {
-            "jogo": jogo,
-            "duracao": duracao,
-            "data": datetime.now().isoformat(),
-            "jogadores": [str(j.id) for j in jogadores]
-        }
+            if len(jogadores) < MINIMO_JOGADORES:
+                return await interaction.response.send_message(
+                    f"❌ Mínimo de {MINIMO_JOGADORES} jogadores para registrar!",
+                    ephemeral=True
+                )
 
-        # Adiciona à lista de partidas
-        dados["partidas"].append(nova_partida)
+            try:
+                # Cria a nova partida
+                nova_partida = {
+                    "jogo": jogo,
+                    "duracao": duracao,
+                    "data": datetime.now().isoformat(),
+                    "jogadores": [str(j.id) for j in jogadores]
+                }
 
-        # Atualiza pontuação acumulada
-        total_jogadores = len(jogadores)
-        for pos, jogador in enumerate(jogadores):
-            pontos = calcular_pontos(pos, total_jogadores)
-            jogador_id = str(jogador.id)
-            dados["pontuacao"][jogador_id] = dados["pontuacao"].get(jogador_id, 0) + pontos
+                # Salva no PostgreSQL
+                success = await salvar_partida(nova_partida)
 
-        salvar_dados(dados)
+                if not success:
+                    return await interaction.response.send_message(
+                        "❌ Erro ao registrar partida no banco de dados!",
+                        ephemeral=True
+                    )
 
-        # Monta mensagem de resultado
-        resultado = f"🎮 {jogo} | ⏱️ {duracao}\n\n"
-        for idx, jogador in enumerate(jogadores):
-            pontos = calcular_pontos(idx, len(jogadores))
-            resultado += f"{POSICOES[idx]} {jogador.display_name} | {pontos:+} ponto{'s' if pontos != 1 else ''}\n"
+                # Monta mensagem de resultado
+                resultado = f"🎮 {jogo} | ⏱️ {duracao}\n\n"
+                for idx, jogador in enumerate(jogadores):
+                    pontos = calcular_pontos(idx, len(jogadores))
+                    resultado += f"{POSICOES[idx]} {jogador.display_name} | {pontos:+} ponto{'s' if pontos != 1 else ''}\n"
 
-        # Adiciona pontuação acumulada
-        resultado += "\n📊 Pontuação Acumulada:\n"
-        for jogador in jogadores:
-            jogador_id = str(jogador.id)
-            resultado += f"{jogador.display_name}: {dados['pontuacao'].get(jogador_id, 0)} pts\n"
+                # Adiciona pontuação acumulada (agora buscando do PostgreSQL)
+                dados = await carregar_dados()
+                resultado += "\n📊 Pontuação Acumulada:\n"
+                for jogador in jogadores:
+                    jogador_id = str(jogador.id)
+                    resultado += f"{jogador.display_name}: {dados['pontuacao'].get(jogador_id, 0)} pts\n"
 
-        await interaction.response.send_message(resultado)
-    except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Erro ao registrar partida: {str(e)}",
-            ephemeral=True
-        )
-        traceback.print_exc()
+                await interaction.response.send_message(resultado)
+            except Exception as e:
+                await interaction.response.send_message(
+                    f"❌ Erro ao registrar partida: {str(e)}",
+                    ephemeral=True
+                )
+                traceback.print_exc()
 
 # ======================
 # COMANDOS DE CONSULTA
@@ -498,96 +580,162 @@ async def listar_jogos(interaction: discord.Interaction):
             ephemeral=True
         )
 
-@bot.tree.command(name="rank", description="Mostra o ranking geral")
-@app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
-async def rank_geral(interaction: discord.Interaction, jogo: str = None):
-    try:
-        dados = carregar_dados()
-        partidas = filtrar_partidas_por_periodo_e_jogo(dados, None, jogo)
-        titulo = "Ranking Geral" + (f" - {jogo.capitalize()}" if jogo else "")
-        mensagem = await criar_embed_ranking(partidas, titulo)
-        await interaction.response.send_message(mensagem)
-    except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Erro ao gerar ranking: {str(e)}",
-            ephemeral=True
-        )
+        @bot.tree.command(name="rank", description="Mostra o ranking geral")
+        @app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
+        async def rank_geral(interaction: discord.Interaction, jogo: str = None):
+            """Mostra o ranking geral de todos os tempos"""
+            try:
+                await interaction.response.defer()
+                titulo = "Ranking Geral" + (f" - {jogo.capitalize()}" if jogo else "")
+                mensagem = await criar_embed_ranking(None, jogo)
+                await interaction.followup.send(mensagem)
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ Erro ao gerar ranking geral: {str(e)}",
+                    ephemeral=True
+                )
 
-@bot.tree.command(name="rank_semanal", description="Mostra o ranking da semana")
-@app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
-async def rank_semanal(interaction: discord.Interaction, jogo: str = None):
-    try:
-        dados = carregar_dados()
-        partidas = filtrar_partidas_por_periodo_e_jogo(dados, "semana", jogo)
-        titulo = "Ranking Semanal" + (f" - {jogo.capitalize()}" if jogo else "")
-        mensagem = await criar_embed_ranking(partidas, titulo)
-        await interaction.response.send_message(mensagem)
-    except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Erro ao gerar ranking semanal: {str(e)}",
-            ephemeral=True
-        )
+        @bot.tree.command(name="rank_semanal", description="Mostra o ranking da semana")
+        @app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
+        async def rank_semanal(interaction: discord.Interaction, jogo: str = None):
+            """Mostra o ranking dos últimos 7 dias"""
+            try:
+                await interaction.response.defer()
+                titulo = "Ranking Semanal" + (f" - {jogo.capitalize()}" if jogo else "")
+                mensagem = await criar_embed_ranking("semana", jogo)
+                await interaction.followup.send(mensagem)
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ Erro ao gerar ranking semanal: {str(e)}",
+                    ephemeral=True
+                )
 
-@bot.tree.command(name="rank_mensal", description="Mostra o ranking do mês")
-@app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
-async def rank_mensal(interaction: discord.Interaction, jogo: str = None):
-    try:
-        dados = carregar_dados()
-        partidas = filtrar_partidas_por_periodo_e_jogo(dados, "mes", jogo)
-        titulo = "Ranking Mensal" + (f" - {jogo.capitalize()}" if jogo else "")
-        mensagem = await criar_embed_ranking(partidas, titulo)
-        await interaction.response.send_message(mensagem)
-    except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Erro ao gerar ranking mensal: {str(e)}",
-            ephemeral=True
-        )
+        @bot.tree.command(name="rank_mensal", description="Mostra o ranking do mês")
+        @app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
+        async def rank_mensal(interaction: discord.Interaction, jogo: str = None):
+            """Mostra o ranking dos últimos 30 dias"""
+            try:
+                await interaction.response.defer()
+                titulo = "Ranking Mensal" + (f" - {jogo.capitalize()}" if jogo else "")
+                mensagem = await criar_embed_ranking("mes", jogo)
+                await interaction.followup.send(mensagem)
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ Erro ao gerar ranking mensal: {str(e)}",
+                    ephemeral=True
+                )
 
-@bot.tree.command(name="rank_anual", description="Mostra o ranking do ano")
-@app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
-async def rank_anual(interaction: discord.Interaction, jogo: str = None):
-    try:
-        dados = carregar_dados()
-        partidas = filtrar_partidas_por_periodo_e_jogo(dados, "ano", jogo)
-        titulo = "Ranking Anual" + (f" - {jogo.capitalize()}" if jogo else "")
-        mensagem = await criar_embed_ranking(partidas, titulo)
-        await interaction.response.send_message(mensagem)
-    except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Erro ao gerar ranking anual: {str(e)}",
-            ephemeral=True
-        )
+        @bot.tree.command(name="rank_anual", description="Mostra o ranking do ano")
+        @app_commands.describe(jogo="(Opcional) Filtra por um jogo específico")
+        async def rank_anual(interaction: discord.Interaction, jogo: str = None):
+            """Mostra o ranking dos últimos 365 dias"""
+            try:
+                await interaction.response.defer()
+                titulo = "Ranking Anual" + (f" - {jogo.capitalize()}" if jogo else "")
+                mensagem = await criar_embed_ranking("ano", jogo)
+                await interaction.followup.send(mensagem)
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ Erro ao gerar ranking anual: {str(e)}",
+                    ephemeral=True
+                )
 
-@bot.tree.command(name="rank_all", description="Mostra o ranking de todos os jogos")
-async def rank_all(interaction: discord.Interaction):
-    try:
-        dados = carregar_dados()
-        jogos = obter_jogos_unicos(dados)
+        @bot.tree.command(name="rank_all", description="Mostra o ranking de todos os jogos")
+        async def rank_all(interaction: discord.Interaction):
+            """Mostra rankings separados para cada jogo"""
+            try:
+                await interaction.response.defer()
 
-        if not jogos:
-            return await interaction.response.send_message("❌ Nenhuma partida registrada ainda!", ephemeral=True)
+                # Obtém a lista de jogos distintos do PostgreSQL
+                conn = await get_async_db_connection()
+                jogos = await conn.fetch("SELECT DISTINCT jogo FROM partidas ORDER BY jogo")
+                await conn.close()
 
-        await interaction.response.defer()
+                if not jogos:
+                    return await interaction.followup.send("❌ Nenhuma partida registrada ainda!")
 
-        mensagem_final = ""
-        for jogo in jogos:
-            partidas = filtrar_partidas_por_periodo_e_jogo(dados, None, jogo)
-            if partidas:
-                ranking = await criar_embed_ranking(partidas, f"Ranking - {jogo.capitalize()}")
-                mensagem_final += f"{ranking}\n\n"
+                mensagem_final = ""
+                for jogo_record in jogos:
+                    jogo = jogo_record['jogo']
+                    mensagem = await criar_embed_ranking(None, jogo)
+                    mensagem_final += f"{mensagem}\n\n"
 
-        if not mensagem_final:
-            return await interaction.followup.send("❌ Nenhum ranking disponível!")
+                # Divide a mensagem se for muito grande
+                partes = [mensagem_final[i:i+2000] for i in range(0, len(mensagem_final), 2000)]
+                for parte in partes:
+                    await interaction.followup.send(parte)
 
-        # Divide a mensagem se for muito grande
-        partes = [mensagem_final[i:i+2000] for i in range(0, len(mensagem_final), 2000)]
-        for parte in partes:
-            await interaction.followup.send(parte)
-    except Exception as e:
-        await interaction.followup.send(
-            f"❌ Erro ao gerar rankings: {str(e)}",
-            ephemeral=True
-        )
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ Erro ao gerar rankings: {str(e)}",
+                    ephemeral=True
+                )
+
+        @bot.tree.command(name="rank_jogador", description="Mostra estatísticas de um jogador específico")
+        @app_commands.describe(jogador="Jogador para ver as estatísticas")
+        async def rank_jogador(interaction: discord.Interaction, jogador: discord.Member):
+            """Mostra estatísticas detalhadas de um jogador específico"""
+            try:
+                await interaction.response.defer()
+
+                conn = await get_async_db_connection()
+
+                # Obtém estatísticas gerais
+                stats = await conn.fetchrow("""
+                    SELECT pontos, partidas, vitorias, fracassos 
+                    FROM pontuacao_acumulada 
+                    WHERE jogador_id = $1
+                """, jogador.id)
+
+                if not stats:
+                    return await interaction.followup.send(
+                        f"ℹ️ {jogador.display_name} não possui partidas registradas!"
+                    )
+
+                # Obtém desempenho por jogo
+                jogos = await conn.fetch("""
+                    SELECT 
+                        p.jogo,
+                        COUNT(*) as partidas,
+                        SUM(jp.pontos) as pontos,
+                        SUM(CASE WHEN jp.posicao = 0 THEN 1 ELSE 0 END) as vitorias,
+                        SUM(CASE WHEN jp.posicao = (SELECT COUNT(*) - 1 FROM jogadores_partida WHERE partida_id = p.id) THEN 1 ELSE 0 END) as fracassos
+                    FROM jogadores_partida jp
+                    JOIN partidas p ON jp.partida_id = p.id
+                    WHERE jp.jogador_id = $1
+                    GROUP BY p.jogo
+                    ORDER BY pontos DESC
+                """, jogador.id)
+
+                await conn.close()
+
+                # Formata a mensagem
+                mensagem = (
+                    f"**📊 Estatísticas de {jogador.display_name}**\n\n"
+                    f"🏆 **Pontuação Total:** {stats['pontos']}\n"
+                    f"🎮 **Partidas Jogadas:** {stats['partidas']}\n"
+                    f"🥇 **Vitórias:** {stats['vitorias']}\n"
+                    f"💀 **Fracassos:** {stats['fracassos']}\n"
+                    f"📈 **Média de Pontos/Partida:** {round(stats['pontos']/stats['partidas'], 2)}\n\n"
+                    f"**🎲 Desempenho por Jogo:**\n"
+                )
+
+                for jogo in jogos:
+                    mensagem += (
+                        f"\n**{jogo['jogo'].capitalize()}:** "
+                        f"{jogo['pontos']} pts | "
+                        f"{jogo['partidas']} partidas | "
+                        f"{jogo['vitorias']}🥇 | "
+                        f"{jogo['fracassos']}💀"
+                    )
+
+                await interaction.followup.send(mensagem)
+
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ Erro ao gerar estatísticas do jogador: {str(e)}",
+                    ephemeral=True
+                )
 
 # ======================
 # COMANDOS DE BACKUP E MANUTENÇÃO
@@ -607,6 +755,47 @@ async def criar_backup(interaction: discord.Interaction):
             f"❌ Erro ao criar backup: {str(e)}",
             ephemeral=True
         )
+
+@bot.tree.command(name="backup_db", description="🔵 Cria backup do banco de dados (apenas admin)")
+@app_commands.default_permissions(administrator=True)
+async def backup_database(interaction: discord.Interaction):
+    """Cria um dump completo do banco de dados"""
+    try:
+        await interaction.response.defer(ephemeral=True)
+
+        # Nome do arquivo de backup
+        backup_file = os.path.join(BACKUP_DIR, f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.sql")
+
+        # Comando para criar o dump (usando pg_dump)
+        db_url = os.getenv('DATABASE_URL')
+        result = urlparse(db_url)
+
+        cmd = (
+            f"pg_dump --dbname=postgresql://{result.username}:{result.password}@"
+            f"{result.hostname}:{result.port}/{result.path[1:]} > {backup_file}"
+        )
+
+        # Executa o comando
+        os.system(cmd)
+
+        # Verifica se o arquivo foi criado
+        if os.path.exists(backup_file) and os.path.getsize(backup_file) > 0:
+            await interaction.followup.send(
+                "✅ Backup criado com sucesso!",
+                file=discord.File(backup_file),
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                "❌ Falha ao criar backup!",
+                ephemeral=True
+            )
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ Erro ao criar backup: {str(e)}",
+            ephemeral=True
+        )
+        traceback.print_exc()
 
 @bot.tree.command(name="download_backup", description="🔵 Baixa o arquivo de dados (apenas admin)")
 @app_commands.default_permissions(administrator=True)
@@ -683,6 +872,40 @@ async def reset_data(interaction: discord.Interaction, confirmacao: str):
             f"❌ Erro ao resetar: {str(e)}",
             ephemeral=True
         )
+
+@bot.tree.command(name="migrate_db", description="🟠 Migra dados do JSON para PostgreSQL (apenas admin)")
+@app_commands.default_permissions(administrator=True)
+async def migrate_database(interaction: discord.Interaction):
+    """Migra todos os dados do arquivo JSON para o PostgreSQL"""
+    try:
+        await interaction.response.defer(ephemeral=True)
+
+        dados = carregar_dados()
+        total = len(dados.get("partidas", []))
+
+        if total == 0:
+            return await interaction.followup.send(
+                "ℹ️ Nenhum dado para migrar!",
+                ephemeral=True
+            )
+
+        # Migra cada partida
+        migradas = 0
+        for partida in dados["partidas"]:
+            success = await salvar_partida(partida)
+            if success:
+                migradas += 1
+
+        await interaction.followup.send(
+            f"✅ Migração concluída! {migradas}/{total} partidas migradas",
+            ephemeral=True
+        )
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ Erro durante migração: {str(e)}",
+            ephemeral=True
+        )
+        traceback.print_exc()
 
 # ======================
 # SISTEMA AUTOMÁTICO
