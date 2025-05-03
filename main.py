@@ -233,37 +233,58 @@ async def download_data(interaction: discord.Interaction):
 @bot.tree.command(name="upload_data", description="📤 Envia um novo arquivo de dados (substitui o atual)")
 @app_commands.default_permissions(administrator=True)
 async def upload_data(interaction: discord.Interaction, arquivo: discord.Attachment):
-    # Verifica se é um arquivo JSON
-    if not arquivo.filename.endswith('.json'):
-        return await interaction.response.send_message("❌ O arquivo deve ser .json!", ephemeral=True)
-
     try:
-        # Baixa o arquivo temporariamente
-        await arquivo.save(f"temp_{DADOS_FILE}")
+        # 1. Verifica se é um arquivo JSON
+        if not arquivo.filename.lower().endswith('.json'):
+            return await interaction.response.send_message("❌ O arquivo deve ser um JSON (.json)!", ephemeral=True)
 
-        # Valida o conteúdo JSON
-        with open(f"temp_{DADOS_FILE}", 'r') as f:
-            json.load(f)  # Testa se é JSON válido
+        # 2. Cria diretório temporário se não existir
+        temp_dir = os.path.join(DATA_DIR, "temp")
+        os.makedirs(temp_dir, exist_ok=True)
 
-        # Substitui o arquivo original
-        shutil.move(f"temp_{DADOS_FILE}", DADOS_FILE)
+        temp_path = os.path.join(temp_dir, "dados_temp.json")
+
+        # 3. Baixa o arquivo
+        await arquivo.save(temp_path)
+
+        # 4. Valida o conteúdo
+        with open(temp_path, 'r', encoding='utf-8') as f:
+            dados = json.load(f)
+
+            # Verifica estrutura básica
+            if not all(key in dados for key in ["partidas", "pontuacao"]):
+                raise ValueError("Estrutura inválida: devem existir 'partidas' e 'pontuacao'")
+
+        # 5. Backup do arquivo atual
+        if os.path.exists(DADOS_FILE):
+            backup_path = os.path.join(BACKUP_DIR, f"backup_pre_upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+            shutil.copy2(DADOS_FILE, backup_path)
+
+        # 6. Substitui o arquivo
+        shutil.move(temp_path, DADOS_FILE)
+
+        # 7. Limpeza
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
         await interaction.response.send_message(
-            "✅ Arquivo de dados atualizado com sucesso!",
+            "✅ Banco de dados atualizado com sucesso!\n"
+            f"📊 Partidas: {len(dados['partidas']}\n"
+            f"👥 Jogadores: {len(dados['pontuacao'])}",
             ephemeral=True
         )
+
     except json.JSONDecodeError:
-        await interaction.response.send_message(
-            "❌ Arquivo JSON inválido!",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ Arquivo JSON inválido ou corrompido!", ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Erro ao atualizar: {str(e)}",
-            ephemeral=True
-        )
-        if os.path.exists(f"temp_{DADOS_FILE}"):
-            os.remove(f"temp_{DADOS_FILE}")
+        error_msg = f"❌ Erro crítico: {str(e)}"
+        print(error_msg)
+        traceback.print_exc()
+        await interaction.response.send_message(error_msg, ephemeral=True)
+
+        # Limpeza em caso de erro
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 @bot.tree.command(name="view_data", description="👁️ Mostra os dados atuais (apenas admin)")
 @app_commands.default_permissions(administrator=True)
