@@ -15,6 +15,7 @@ from psycopg2 import sql
 from psycopg2.extras import DictCursor
 from urllib.parse import urlparse
 import asyncpg  # Para operações assíncronas
+import subprocess
 
 # ======================
 # CONFIGURAÇÕES GLOBAIS
@@ -33,6 +34,18 @@ POSICOES = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", 
 CANAL_RANKING_ID = 1360294622768926901
 MINIMO_JOGADORES = 2
 
+dependencies = [
+    'psycopg2-binary',
+    'asyncpg',
+    'python-dotenv'
+]
+
+for dep in dependencies:
+    try:
+        __import__(dep.split('==')[0])
+    except ImportError:
+        print(f"Instalando {dep}...")
+        subprocess.check_call(['pip', 'install', dep])
 
 
 # Lock para operações de arquivo
